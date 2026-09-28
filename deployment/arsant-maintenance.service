@@ -1,0 +1,17 @@
+[Unit]
+Description=Arsant Screener database retention
+RequiresMountsFor=/srv/arsant-data
+After=network-online.target arsant-api.service
+
+[Service]
+Type=oneshot
+User=opc
+WorkingDirectory=/srv/arsant-screener
+EnvironmentFile=/etc/arsant-screener.env
+ExecStartPre=/opt/arsant-screener/bin/arsant-migrate -action up
+ExecStart=/opt/arsant-screener/bin/arsant-maintenance -apply
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=strict
+

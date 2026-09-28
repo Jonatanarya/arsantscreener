@@ -1,0 +1,74 @@
+{
+  "manifest_version": 3,
+  "name": "Arsant Screener Bridge — Stockbit Data Collector",
+  "version": "4.6.6",
+  "description": "Data Collector pasif dari Stockbit ke REST API Arsant Screener: histori 5 tahun per kategori saham (bluechip/second/third/gorengan), bandarmologi, fundamental, kepemilikan & aksi korporasi.",
+  "minimum_chrome_version": "116",
+  "permissions": [
+    "storage",
+    "unlimitedStorage",
+    "alarms",
+    "webRequest",
+    "cookies"
+  ],
+  "host_permissions": [
+    "https://stockbit.com/*",
+    "https://*.stockbit.com/*",
+    "https://exodus.stockbit.com/*",
+    "https://arsant.web.id/*",
+    "https://www.arsant.web.id/*",
+    "http://localhost/*",
+    "http://127.0.0.1/*"
+  ],
+  "optional_host_permissions": [
+    "http://*/*",
+    "https://*/*"
+  ],
+  "background": {
+    "service_worker": "background.js",
+    "type": "module"
+  },
+  "action": {
+    "default_title": "Arsant Screener Data Collector",
+    "default_popup": "popup.html"
+  },
+  "options_page": "options.html",
+  "content_scripts": [
+    {
+      "matches": [
+        "https://stockbit.com/*",
+        "https://*.stockbit.com/*"
+      ],
+      "js": [
+        "interceptor.js"
+      ],
+      "run_at": "document_start",
+      "all_frames": true,
+      "world": "MAIN"
+    },
+    {
+      "matches": [
+        "https://stockbit.com/*",
+        "https://*.stockbit.com/*"
+      ],
+      "js": [
+        "pageAgent.js"
+      ],
+      "run_at": "document_start",
+      "all_frames": false,
+      "world": "MAIN"
+    },
+    {
+      "matches": [
+        "https://stockbit.com/*",
+        "https://*.stockbit.com/*"
+      ],
+      "js": [
+        "content.js"
+      ],
+      "run_at": "document_idle",
+      "all_frames": false,
+      "world": "ISOLATED"
+    }
+  ]
+}

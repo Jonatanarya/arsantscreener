@@ -1,0 +1,281 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+  <meta charset="utf-8" />
+  <title>Arsant Screener Data Collector — Setelan</title>
+  <style>
+    :root { color-scheme: dark; }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0; padding: 0 0 40px;
+      font: 13.5px/1.6 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      background: #0d1117; color: #e6edf3;
+    }
+    header {
+      position: sticky; top: 0; z-index: 5; padding: 14px 24px;
+      background: linear-gradient(180deg,#161b22,#0d1117); border-bottom: 1px solid #21262d;
+      display: flex; align-items: center; gap: 12px;
+    }
+    header h1 { font-size: 15px; margin: 0; flex: 1; }
+    main { max-width: 860px; margin: 0 auto; padding: 0 24px; }
+    .card { background: #161b22; border: 1px solid #21262d; border-radius: 10px; padding: 16px 18px; margin-top: 16px; }
+    .card h2 { font-size: 13px; margin: 0 0 12px; text-transform: uppercase; letter-spacing: .6px; color: #8b949e; }
+    .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: 12px; }
+    label.lbl { display: block; font-size: 11px; color: #8b949e; margin-bottom: 4px; }
+    input[type=text], input[type=number], select, textarea {
+      width: 100%; padding: 6px 9px; font: inherit; font-size: 12.5px;
+      background: #0d1117; color: #e6edf3; border: 1px solid #30363d; border-radius: 6px;
+    }
+    input:focus, select:focus, textarea:focus { outline: none; border-color: #58a6ff; }
+    .chk { display: flex; align-items: center; gap: 7px; font-size: 12.5px; cursor: pointer; padding: 3px 0; }
+    input[type=checkbox] { accent-color: #238636; }
+    button {
+      padding: 7px 14px; font: inherit; font-size: 12.5px; cursor: pointer;
+      background: #21262d; color: #e6edf3; border: 1px solid #30363d; border-radius: 6px;
+    }
+    button:hover { background: #30363d; }
+    button.primary { background: #238636; border-color: #2ea043; }
+    button.primary:hover { background: #2ea043; }
+    .epgroup { margin-bottom: 14px; }
+    .epgroup h3 { font-size: 12px; margin: 0 0 6px; color: #58a6ff; }
+    .eplist { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 2px 14px; }
+    .ep { display: flex; align-items: center; gap: 7px; font-size: 12px; padding: 2px 0; }
+    .ep .tag { font-size: 9.5px; padding: 1px 5px; border-radius: 8px; border: 1px solid #30363d; color: #6e7681; }
+    .ep .tag.year { color: #d29922; border-color: #d2992255; }
+    .hint { font-size: 11.5px; color: #6e7681; margin-top: 8px; }
+    .ok { color: #3fb950; } .bad { color: #f85149; } .warn { color: #d29922; }
+    pre {
+      background: #010409; border: 1px solid #21262d; border-radius: 6px; padding: 10px;
+      font-size: 11px; max-height: 260px; overflow: auto; white-space: pre-wrap; word-break: break-all;
+    }
+    table { width: 100%; border-collapse: collapse; font-size: 12px; }
+    th, td { text-align: left; padding: 5px 8px; border-bottom: 1px solid #21262d; }
+    th { color: #8b949e; font-weight: 500; font-size: 11px; text-transform: uppercase; }
+    .toolbar { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+    .saved { color: #3fb950; font-size: 12px; opacity: 0; transition: opacity .3s; }
+    .saved.show { opacity: 1; }
+
+    /* --- kartu kedalaman histori --- */
+    .depths { display: grid; grid-template-columns: repeat(auto-fit, minmax(268px, 1fr)); gap: 10px; }
+    .dcard {
+      background: #0d1117; border: 1px solid #21262d; border-radius: 8px; padding: 11px 12px;
+      display: flex; flex-direction: column; gap: 9px;
+    }
+    .dcard-top { display: flex; align-items: flex-start; gap: 8px; }
+    .dcard-ico { font-size: 15px; line-height: 1.2; }
+    .dcard-name { font-size: 12.5px; font-weight: 600; color: #e6edf3; }
+    .dcard-sub { font-size: 10.5px; color: #6e7681; }
+    /* segmented control */
+    .seg { display: inline-flex; border: 1px solid #30363d; border-radius: 6px; overflow: hidden; }
+    .seg button {
+      padding: 4px 10px; font-size: 11px; border: none; border-radius: 0;
+      background: transparent; color: #8b949e;
+    }
+    .seg button + button { border-left: 1px solid #30363d; }
+    .seg button.on { background: #238636; color: #fff; }
+    /* preset cepat */
+    .presets { display: flex; flex-wrap: wrap; gap: 4px; }
+    .presets button {
+      padding: 2px 8px; font-size: 10.5px; border-radius: 10px;
+      background: transparent; border: 1px solid #30363d; color: #8b949e;
+    }
+    .presets button.on { border-color: #2ea043; color: #3fb950; background: #23863622; }
+    .drow { display: flex; align-items: center; gap: 6px; }
+    .drow label { font-size: 10.5px; color: #6e7681; min-width: 34px; }
+    .dcard input[type=number] { width: 74px; }
+    .dcard input[type=date] { flex: 1; min-width: 0; }
+    .deff {
+      font-size: 10.5px; color: #58a6ff; background: #58a6ff14;
+      border: 1px solid #58a6ff33; border-radius: 5px; padding: 4px 7px;
+      font-variant-numeric: tabular-nums;
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>⚙ Arsant Screener Data Collector — Setelan Lanjutan</h1>
+    <span class="saved" id="saved">tersimpan ✔</span>
+    <button class="primary" id="btnSave">Simpan</button>
+  </header>
+
+  <main>
+    <div class="card">
+      <h2>Backend REST API</h2>
+      <div class="grid">
+        <div>
+          <label class="lbl" for="backendUrl">Base URL</label>
+          <input type="text" id="backendUrl" placeholder="https://arsant.web.id/api" />
+        </div>
+        <div>
+          <label class="lbl" for="backendApiKey">API Key (opsional, header X-API-Key)</label>
+          <input type="text" id="backendApiKey" placeholder="kosongkan bila tidak dipakai" />
+        </div>
+        <div>
+          <label class="lbl" for="rawPath">Path penampung payload mentah</label>
+          <input type="text" id="rawPath" placeholder="/ingest/raw" />
+        </div>
+      </div>
+      <div style="margin-top:10px">
+        <label class="chk"><input type="checkbox" id="skipExisting" /> <b>Lewati data yang sudah ada di database</b> (crawl inkremental)</label>
+        <div class="hint" style="margin:2px 0 8px 22px">
+          Jendela histori yang sudah lewat tidak pernah ditarik ulang — datanya tidak berubah lagi.
+          Jendela yang menyentuh hari ini disegarkan sekali sehari, jadi aman dijalankan rutin tiap hari.
+        </div>
+        <div style="max-width:220px; margin:0 0 10px 22px">
+          <label class="lbl" for="refreshAfterDays">Segarkan data tanpa tanggal setiap … hari</label>
+          <input type="number" id="refreshAfterDays" min="0" step="1" />
+        </div>
+        <label class="chk"><input type="checkbox" id="relayEnabled" /> Kirim hasil crawl ke backend</label>
+        <label class="chk"><input type="checkbox" id="relayRaw" /> Kirim juga payload mentah untuk endpoint yang sudah punya transform</label>
+      </div>
+      <div class="toolbar" style="margin-top:10px">
+        <button id="btnTestBackend">Tes koneksi</button>
+        <button id="btnGrant">Izinkan host backend</button>
+        <button id="btnFlush">Kirim ulang buffer</button>
+        <span class="hint" id="backendHint" style="margin:0"></span>
+      </div>
+      <div class="hint">
+        Endpoint yang punya route khusus di backend: <code>/ingest/bars</code>, <code>/ingest/broker-range</code>,
+        <code>/ingest/keystats</code>, <code>/ingest/financial-statements</code>, <code>/ingest/market-movers</code>,
+        <code>/ingest/insider-transactions</code>. Sisanya dikirim ke path penampung di atas dengan amplop
+        <code>{source, endpoint, symbol, params, payload}</code>.
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>Pilih emiten yang dikumpulkan</h2>
+      <div class="toolbar">
+        <input type="text" id="symSearch" placeholder="Cari kode atau nama emiten…" style="max-width:260px" />
+        <select id="symBoard" style="max-width:180px"><option value="">Semua papan</option></select>
+        <button id="symAll">Centang semua</button>
+        <button id="symNone">Kosongkan</button>
+        <button id="symVisible">Centang hasil cari</button>
+        <span class="hint" id="symCount" style="margin:0"></span>
+      </div>
+      <label class="chk" style="margin-top:8px">
+        <input type="checkbox" id="customOnly" />
+        <b>Crawl HANYA emiten yang dicentang</b>
+      </label>
+      <div class="hint" style="margin:2px 0 8px 22px">
+        Kalau tidak dicentang, seluruh emiten BEI dikumpulkan dan pilihan di bawah hanya
+        menentukan urutan prioritas (yang dicentang dikerjakan lebih dulu).
+      </div>
+      <div id="symList" style="max-height:320px; overflow-y:auto; border:1px solid #21262d;
+           border-radius:6px; padding:6px; display:grid;
+           grid-template-columns:repeat(auto-fit,minmax(220px,1fr)); gap:1px 12px"></div>
+    </div>
+
+    <div class="card">
+      <h2>Kedalaman histori per jenis data</h2>
+      <div class="hint" style="margin-top:0">
+        Biaya tiap jenis data jauh berbeda: candle 5 tahun cuma 9 request, running trade 5 tahun
+        bisa ribuan request berpaginasi. Karena itu kedalamannya diatur terpisah — pilih satuan
+        <b>hari / minggu / bulan / tahun</b>, atau <b>rentang tanggal</b> persis.
+      </div>
+      <div class="depths" id="depthCards" style="margin-top:12px"></div>
+    </div>
+
+    <div class="card">
+      <h2>Anti-deteksi bot</h2>
+      <div class="grid">
+        <div><label class="lbl" for="minDelayMs">Jeda minimum antar-request (ms)</label><input type="number" id="minDelayMs" min="500" step="250" /></div>
+        <div><label class="lbl" for="maxDelayMs">Jeda maksimum (ms)</label><input type="number" id="maxDelayMs" min="500" step="250" /></div>
+        <div><label class="lbl" for="batchMin">Istirahat panjang tiap … request (min)</label><input type="number" id="batchMin" min="1" /></div>
+        <div><label class="lbl" for="batchMax">… (max)</label><input type="number" id="batchMax" min="1" /></div>
+        <div><label class="lbl" for="longPauseMinMs">Durasi istirahat panjang min (ms)</label><input type="number" id="longPauseMinMs" min="1000" step="1000" /></div>
+        <div><label class="lbl" for="longPauseMaxMs">… max (ms)</label><input type="number" id="longPauseMaxMs" min="1000" step="1000" /></div>
+        <div><label class="lbl" for="cooldownMinMs">Cooldown 429/403 min (ms)</label><input type="number" id="cooldownMinMs" min="10000" step="10000" /></div>
+        <div><label class="lbl" for="cooldownMaxMs">… max (ms)</label><input type="number" id="cooldownMaxMs" min="10000" step="10000" /></div>
+        <div><label class="lbl" for="maxRetries">Percobaan ulang per job</label><input type="number" id="maxRetries" min="0" max="5" /></div>
+        <div><label class="lbl" for="requestTimeoutMs">Timeout request (ms)</label><input type="number" id="requestTimeoutMs" min="5000" step="1000" /></div>
+      </div>
+      <div class="hint">Makin pelan makin aman. Nilai bawaan (3–7 detik + istirahat 20–40 detik tiap 15–20 request) sudah konservatif untuk crawl semalaman.</div>
+    </div>
+
+    <div class="card">
+      <h2>Klasifikasi & filter</h2>
+      <div class="grid">
+        <div><label class="lbl" for="thBluechip">Ambang Bluechip (Rp)</label><input type="number" id="thBluechip" step="1000000000" /></div>
+        <div><label class="lbl" for="thSecond">Ambang Second Liner (Rp)</label><input type="number" id="thSecond" step="1000000000" /></div>
+        <div>
+          <label class="lbl" for="investorType">investor_type</label>
+          <select id="investorType">
+            <option value="all_investor">all_investor</option>
+            <option value="foreign">foreign</option>
+            <option value="domestic">domestic</option>
+          </select>
+        </div>
+        <div>
+          <label class="lbl" for="marketBoard">market_board</label>
+          <select id="marketBoard">
+            <option value="all_market">all_market</option>
+            <option value="regular">regular</option>
+            <option value="nego">nego</option>
+            <option value="tunai">tunai</option>
+          </select>
+        </div>
+        <div><label class="lbl" for="screenerTemplateId">Screener template id (opsional)</label><input type="text" id="screenerTemplateId" /></div>
+        <div><label class="lbl" for="historicalPeriod">period historical/summary</label><input type="text" id="historicalPeriod" placeholder="daily" /></div>
+      </div>
+      <div class="hint">
+        Ambang bawaan: Bluechip &gt; Rp 10 T, Second Liner Rp 500 M – 10 T, Third Liner &lt; Rp 500 M.
+        Kategori “gorengan” terdeteksi otomatis dari papan pemantauan khusus, market mover ekstrem,
+        konsentrasi broker, dan volatilitas harga — terlepas dari ukuran kapitalisasinya.
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>Template request dari halaman</h2>
+      <div class="hint" style="margin-top:0">
+        Sebagian endpoint Exodus menolak request kalau satu nilai enum-nya meleset, dan nama enum itu
+        tidak terdokumentasi. Alih-alih menebak, collector <b>menyalin bentuk request asli</b> yang
+        dibuat halaman Stockbit saat Anda browsing biasa, lalu hanya mengganti kode emiten &amp;
+        rentang tanggalnya. Buka sekali halaman Stockbit yang memakai fitur terkait, template-nya
+        akan terpelajari otomatis.
+      </div>
+      <div class="toolbar" style="margin:10px 0">
+        <button id="btnLoadTemplates">Muat ulang</button>
+      </div>
+      <table id="templateTable">
+        <thead><tr><th>Endpoint</th><th>Status</th><th>Buka halaman ini di Stockbit</th></tr></thead>
+        <tbody></tbody>
+      </table>
+    </div>
+
+    <div class="card">
+      <h2>Endpoint yang di-crawl</h2>
+      <div class="toolbar" style="margin-bottom:10px">
+        <button id="btnAllOn">Aktifkan semua</button>
+        <button id="btnAllOff">Matikan semua</button>
+        <button id="btnDefaults">Kembali ke bawaan</button>
+      </div>
+      <div id="endpoints"></div>
+    </div>
+
+    <div class="card">
+      <h2>Uji satu endpoint</h2>
+      <div class="toolbar">
+        <select id="testEndpoint" style="max-width:340px"></select>
+        <input type="text" id="testSymbol" value="BBCA" style="max-width:110px" />
+        <button id="btnTestEndpoint">Jalankan</button>
+        <span class="hint" style="margin:0">Butuh satu tab Stockbit terbuka &amp; sudah login.</span>
+      </div>
+      <pre id="testOut" style="margin-top:10px">—</pre>
+    </div>
+
+    <div class="card">
+      <h2>Hasil klasifikasi</h2>
+      <div class="toolbar" style="margin-bottom:10px">
+        <button id="btnLoadClasses">Muat ulang</button>
+        <span class="hint" id="classSummary" style="margin:0"></span>
+      </div>
+      <table id="classTable">
+        <thead><tr><th>Emiten</th><th>Tier</th><th>Market Cap</th><th>Gorengan</th><th>Alasan</th></tr></thead>
+        <tbody></tbody>
+      </table>
+    </div>
+  </main>
+
+  <script src="options.js"></script>
+</body>
+</html>

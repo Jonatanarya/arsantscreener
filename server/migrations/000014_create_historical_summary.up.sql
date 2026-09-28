@@ -1,0 +1,19 @@
+CREATE TABLE IF NOT EXISTS historical_summary (
+    id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+    symbol VARCHAR(16) NOT NULL,
+    period VARCHAR(32) NOT NULL,
+    date DATE NOT NULL,
+    open DOUBLE NOT NULL DEFAULT 0,
+    high DOUBLE NOT NULL DEFAULT 0,
+    low DOUBLE NOT NULL DEFAULT 0,
+    close DOUBLE NOT NULL DEFAULT 0,
+    volume BIGINT NOT NULL DEFAULT 0,
+    value DOUBLE NOT NULL DEFAULT 0,
+    change_pct DOUBLE NOT NULL DEFAULT 0,
+    freq INT NOT NULL DEFAULT 0,
+    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    UNIQUE KEY uq_hist_sym_period_date (symbol, period, date),
+    KEY idx_hist_sym_period (symbol, period),
+    KEY idx_hist_date (date)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;

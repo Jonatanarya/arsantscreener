@@ -1,0 +1,1 @@
+DROP TABLE IF EXISTS bars_daily;

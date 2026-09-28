@@ -1,0 +1,9 @@
+[Unit]
+Description=Backup Arsant Screener MySQL database
+RequiresMountsFor=/srv/arsant-data
+After=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/arsant-mysql-backup
+

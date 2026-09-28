@@ -1,0 +1,183 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+  <meta charset="utf-8" />
+  <title>Arsant Screener Data Collector</title>
+  <style>
+    :root { color-scheme: dark; }
+    * { box-sizing: border-box; }
+    body {
+      width: 384px; margin: 0; padding: 0;
+      font: 13px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      background: #0d1117; color: #e6edf3;
+    }
+    header {
+      display: flex; align-items: center; gap: 8px; padding: 11px 13px;
+      background: linear-gradient(180deg, #161b22, #0d1117); border-bottom: 1px solid #21262d;
+    }
+    .dot { width: 9px; height: 9px; border-radius: 50%; background: #6e7681; flex: none; }
+    .dot.running { background: #3fb950; box-shadow: 0 0 8px #3fb95088; }
+    .dot.paused { background: #d29922; }
+    .dot.cooldown { background: #f85149; }
+    .dot.done { background: #58a6ff; }
+    h1 { font-size: 13px; margin: 0; flex: 1; font-weight: 600; }
+    .badge { font-size: 10px; padding: 2px 6px; border-radius: 10px; border: 1px solid #30363d; color: #8b949e; }
+    .badge.ok { color: #3fb950; border-color: #23863680; }
+    .badge.bad { color: #f85149; border-color: #f8514980; }
+    section { padding: 11px 13px; border-bottom: 1px solid #21262d; }
+    section:last-of-type { border-bottom: none; }
+    label.lbl { display: block; font-size: 11px; color: #8b949e; margin-bottom: 4px; text-transform: uppercase; letter-spacing: .4px; }
+    input[type=text], input[type=number], textarea, select {
+      width: 100%; padding: 6px 8px; font: inherit; font-size: 12px;
+      background: #0d1117; color: #e6edf3; border: 1px solid #30363d; border-radius: 6px;
+    }
+    textarea { resize: vertical; min-height: 46px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11px; }
+    input:focus, textarea:focus, select:focus { outline: none; border-color: #58a6ff; }
+    .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+    .cats { display: grid; grid-template-columns: 1fr 1fr; gap: 6px 10px; }
+    .cats label, .chk { display: flex; align-items: center; gap: 6px; font-size: 12px; cursor: pointer; }
+    input[type=checkbox] { accent-color: #238636; }
+    .btns { display: flex; gap: 6px; }
+    button {
+      flex: 1; padding: 7px 8px; font: inherit; font-size: 12px; font-weight: 500; cursor: pointer;
+      background: #21262d; color: #e6edf3; border: 1px solid #30363d; border-radius: 6px;
+    }
+    button:hover:not(:disabled) { background: #30363d; }
+    button:disabled { opacity: .4; cursor: not-allowed; }
+    button.primary { background: #238636; border-color: #2ea043; }
+    button.primary:hover:not(:disabled) { background: #2ea043; }
+    button.danger { color: #f85149; }
+    button.small { flex: none; padding: 4px 9px; font-size: 11px; }
+    .bar { height: 6px; background: #21262d; border-radius: 3px; overflow: hidden; margin: 8px 0 6px; }
+    .fill { height: 100%; width: 0; background: linear-gradient(90deg, #238636, #3fb950); transition: width .4s; }
+    .row { display: flex; justify-content: space-between; font-size: 11px; margin-bottom: 3px; }
+    .row .k { color: #8b949e; }
+    .row .v { font-variant-numeric: tabular-nums; }
+    .sym { color: #58a6ff; font-weight: 600; }
+    #logs {
+      max-height: 132px; overflow-y: auto; font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+      font-size: 10.5px; line-height: 1.5; background: #010409; border: 1px solid #21262d;
+      border-radius: 6px; padding: 6px 7px;
+    }
+    #logs div { white-space: pre-wrap; word-break: break-word; }
+    .lvl-warn { color: #d29922; } .lvl-error { color: #f85149; }
+    .lvl-info { color: #8b949e; } .lvl-debug { color: #484f58; }
+    .hint { font-size: 10.5px; color: #6e7681; margin-top: 6px; }
+    .askbox { border: 1px solid #9e6a03; background: #9e6a0318; border-radius: 8px; padding: 9px 10px; }
+    .asktitle { font-size: 12px; font-weight: 600; color: #e3b341; margin-bottom: 5px; }
+    .dsum { display: flex; flex-direction: column; gap: 3px; margin-bottom: 6px; }
+    .dsum div { display: flex; justify-content: space-between; gap: 8px; font-size: 11px; }
+    .dsum .dk { color: #8b949e; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .dsum .dv { color: #58a6ff; font-variant-numeric: tabular-nums; flex-shrink: 0; }
+    footer { padding: 9px 13px; display: flex; gap: 8px; align-items: center; border-top: 1px solid #21262d; }
+    a { color: #58a6ff; text-decoration: none; font-size: 11px; }
+    a:hover { text-decoration: underline; }
+  </style>
+</head>
+<body>
+  <header>
+    <span class="dot" id="dot"></span>
+    <h1>Arsant Screener Data Collector</h1>
+    <span class="badge" id="badgeTab">tab —</span>
+    <span class="badge" id="badgeAuth">token —</span>
+  </header>
+
+  <section>
+    <label class="lbl" for="backendUrl">Base URL REST API Backend</label>
+    <div style="display:flex; gap:6px">
+      <input type="text" id="backendUrl" placeholder="https://arsant.web.id/api" />
+      <button class="small" id="btnTest">Tes</button>
+    </div>
+    <div class="hint" id="backendHint">Hasil crawl dikirim ke endpoint /ingest/* di server ini.</div>
+  </section>
+
+  <section>
+    <label class="lbl">Kategori saham yang di-crawl</label>
+    <div class="cats">
+      <label><input type="checkbox" value="bluechip" class="cat" /> 💎 Bluechip</label>
+      <label><input type="checkbox" value="second" class="cat" /> 🔷 Second Liner</label>
+      <label><input type="checkbox" value="third" class="cat" /> 🔸 Third Liner</label>
+      <label><input type="checkbox" value="gorengan" class="cat" /> 🔥 Gorengan</label>
+    </div>
+    <label class="chk" style="margin-top:9px">
+      <input type="checkbox" id="liquidityOnlyHeavy" /> Hanya saham likuid untuk tahap berat
+    </label>
+    <div class="hint">Tahap 1 tetap mengumpulkan harga. Broker flow dan running trade hanya dipanggil untuk kandidat likuid dari Arsant.</div>
+    <div class="grid2" style="margin-top:7px">
+      <label class="lbl" style="margin:0" for="liquidityCandidateLimit">Maks. kandidat likuid
+        <input type="number" id="liquidityCandidateLimit" min="10" max="900" step="10" />
+      </label>
+    </div>
+  </section>
+
+  <section>
+    <label class="lbl" for="customSymbols">Mode kustom — daftar emiten manual</label>
+    <textarea id="customSymbols" placeholder="BBCA, TLKM, BBNI"></textarea>
+    <label class="chk" style="margin-top:6px">
+      <input type="checkbox" id="customOnly" /> Crawl HANYA emiten di daftar ini
+    </label>
+  </section>
+
+  <section>
+    <label class="lbl">Kedalaman histori — per jenis data</label>
+    <div class="dsum" id="depthSummary">—</div>
+    <a href="#" id="openDepth">⚙ Ubah kedalaman di Setelan</a>
+  </section>
+
+  <section>
+    <label class="lbl" for="maxSymbols">Batas emiten (0 = semua)</label>
+    <input type="number" id="maxSymbols" min="0" step="10" />
+    <div class="hint" id="estimate">—</div>
+  </section>
+
+  <section>
+    <div class="btns">
+      <button class="primary" id="btnStart">▶ Start</button>
+      <button id="btnPause">⏸ Pause</button>
+      <button id="btnResume">⏵ Resume</button>
+      <button class="danger" id="btnStop">⏹ Stop</button>
+    </div>
+  </section>
+
+  <section id="resumeAsk" hidden>
+    <div class="askbox">
+      <div class="asktitle">⚠ Antrean sebelumnya belum selesai</div>
+      <div class="hint" id="resumeInfo" style="margin-top:0">—</div>
+      <div class="btns" style="margin-top:8px">
+        <button class="primary" id="btnContinue">⏵ Lanjutkan</button>
+        <button class="danger" id="btnFresh">↻ Mulai baru</button>
+        <button id="btnCancelAsk">Batal</button>
+      </div>
+      <div class="hint">“Mulai baru” mengembalikan kursor ke awal. Datanya tidak akan
+      terduplikasi, tapi antreannya disusuri ulang dari nol.</div>
+    </div>
+  </section>
+
+  <section id="progressBox">
+    <div class="row"><span class="k" id="phase">Idle</span><span class="v sym" id="curSymbol">—</span></div>
+    <div class="bar"><div class="fill" id="fill"></div></div>
+    <div class="row"><span class="k">Progres</span><span class="v" id="pct">0%</span></div>
+    <div class="row"><span class="k">Request (sukses/gagal)</span><span class="v" id="reqs">0 (0/0)</span></div>
+    <div class="row"><span class="k">Dilewati — data sudah ada</span><span class="v" id="skippedExisting">0</span></div>
+    <div class="row"><span class="k">Emiten dilewati filter</span><span class="v" id="skipped">0</span></div>
+    <div class="row"><span class="k">Payload terkirim ke backend</span><span class="v" id="relayed">0</span></div>
+    <div class="row"><span class="k">Rate limit (429/403)</span><span class="v" id="rl">0</span></div>
+    <div class="row"><span class="k">Request berikutnya</span><span class="v" id="next">—</span></div>
+    <div id="doneMsg" style="display:none; margin-top:8px; padding:7px 9px; border-radius:6px;
+         background:#0d2818; border:1px solid #238636; color:#3fb950; font-size:11.5px; line-height:1.5"></div>
+  </section>
+
+  <section>
+    <label class="lbl">Log</label>
+    <div id="logs"></div>
+  </section>
+
+  <footer>
+    <a href="#" id="openOptions">⚙ Setelan lanjutan &amp; endpoint</a>
+    <span style="flex:1"></span>
+    <a href="#" id="clearLogs">bersihkan log</a>
+  </footer>
+
+  <script src="popup.js"></script>
+</body>
+</html>

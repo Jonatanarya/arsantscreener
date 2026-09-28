@@ -1,0 +1,17 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+backup_dir=/srv/arsant-data/backups/mysql
+stamp=$(date -u +%Y%m%dT%H%M%SZ)
+temporary="$backup_dir/.arsant-screener-$stamp.sql.gz.tmp"
+destination="$backup_dir/arsant-screener-$stamp.sql.gz"
+
+install -d -m 700 "$backup_dir"
+podman exec arsant-screener-mysql sh -c \
+  'exec mysqldump -uroot -p"$MYSQL_ROOT_PASSWORD" --single-transaction --quick --routines --events --triggers arsant_screener' \
+  | gzip -1 > "$temporary"
+test -s "$temporary"
+gzip -t "$temporary"
+mv "$temporary" "$destination"
+find "$backup_dir" -type f -name 'arsant-screener-*.sql.gz' -mtime +7 -delete
+

@@ -1,0 +1,34 @@
+[Unit]
+Description=Arsant Screener Data Worker
+After=network-online.target arsant-api.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=opc
+WorkingDirectory=/srv/arsant-screener
+EnvironmentFile=/etc/arsant-screener.env
+Environment=ARSANT_WORKER_ID=vps-primary
+Environment=ARSANT_WORKER_POLL_SECONDS=2
+Environment=ARSANT_EOD_SYMBOL_LIMIT=300
+Environment=ARSANT_EOD_AFTER_HOUR=17
+Environment=ARSANT_EOD_AFTER_MINUTE=15
+Environment=ARSANT_BROKER_SYMBOL_LIMIT=300
+Environment=ARSANT_BROKER_AGENT_URL=http://127.0.0.1:4311
+Environment=ARSANT_STORAGE_GUARD_PATHS=/,/srv/arsant-data
+Environment=ARSANT_STORAGE_CRITICAL_PERCENT=90
+ExecStartPre=/opt/arsant-screener/bin/arsant-migrate -action up
+ExecStart=/opt/arsant-screener/bin/arsant-worker
+Restart=always
+RestartSec=10
+
+# Worker hanya membutuhkan database dan jaringan. Pembatasan ini mencegahnya
+# menulis ke lokasi lain di sistem.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=strict
+ReadWritePaths=/srv/arsant-data
+
+[Install]
+WantedBy=multi-user.target

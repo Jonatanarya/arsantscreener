@@ -1,0 +1,18 @@
+[Unit]
+Description=Arsant Screener API
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=opc
+WorkingDirectory=/srv/arsant-screener
+EnvironmentFile=/etc/arsant-screener.env
+Environment=ARSANT_BROKER_AGENT_URL=http://127.0.0.1:4311
+ExecStartPre=/opt/arsant-screener/bin/arsant-migrate -action up
+ExecStart=/opt/arsant-screener/bin/arsant-api
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,12 @@
+{
+  "name": "Arsant Screener",
+  "short_name": "Arsant",
+  "description": "Workspace analisis saham Indonesia",
+  "start_url": "/trade",
+  "display": "standalone",
+  "background_color": "#071426",
+  "theme_color": "#071426",
+  "icons": [
+    { "src": "/arsant-logo.png", "sizes": "512x512", "type": "image/png" }
+  ]
+}

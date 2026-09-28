@@ -1,0 +1,19 @@
+[Unit]
+Description=Arsant Stockbit local session agent
+After=network-online.target arsant-stockbit-browser.service
+Requires=arsant-stockbit-browser.service
+
+[Service]
+Type=simple
+User=opc
+WorkingDirectory=/opt/arsant-screener/agent
+Environment=ARSANT_STOCKBIT_CDP_URL=http://127.0.0.1:9222
+Environment=ARSANT_STOCKBIT_AGENT_PORT=4311
+ExecStart=/opt/arsant-screener/bin/arsant-node /opt/arsant-screener/agent/stockbit-session-agent.mjs
+Restart=always
+RestartSec=10
+NoNewPrivileges=true
+ProtectSystem=strict
+
+[Install]
+WantedBy=multi-user.target

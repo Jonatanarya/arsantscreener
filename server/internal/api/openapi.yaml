@@ -1,0 +1,3282 @@
+openapi: 3.0.3
+info:
+  title: Arsant Screener API
+  version: 0.1.0
+  description: >
+    API backend Golang untuk Arsant Screener. Endpoint /ingest/* menerima
+    data yang direlay oleh bridge-extension (hasil intercept Stockbit) dan
+    disimpan ke MySQL. Bentuk payload mengikuti format asli yang ditangkap
+    interceptor.js (chartbit price/daily, broker summary buy/sell).
+servers:
+  - url: http://localhost:4000
+
+paths:
+  /health:
+    get:
+      operationId: getHealth
+      summary: Cek status server dan koneksi database
+      responses:
+        '200':
+          description: Server sehat
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HealthResponse'
+        '503':
+          description: Database tidak terjangkau
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HealthResponse'
+
+  /ingest/bars:
+    post:
+      operationId: ingestBars
+      summary: Simpan candle harian (dari chartbit price/daily) untuk satu simbol
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/IngestBarsRequest'
+      responses:
+        '204':
+          description: Tersimpan
+        '400':
+          description: Payload tidak valid
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /ingest/broker-summary:
+    post:
+      operationId: ingestBrokerSummary
+      summary: Simpan broker summary (buy/sell per broker) untuk satu simbol+tanggal
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/IngestBrokerSummaryRequest'
+      responses:
+        '204':
+          description: Tersimpan
+        '400':
+          description: Payload tidak valid
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /symbols:
+    get:
+      operationId: listSymbols
+      summary: Watchlist — semua simbol beserta bar terakhir yang tersimpan
+      responses:
+        '200':
+          description: Daftar simbol
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/WatchlistItem'
+
+  /ingest/orderbook:
+    post:
+      operationId: ingestOrderbook
+      summary: >
+        Simpan satu snapshot orderbook (dipoll bridge-extension tiap ~1,5 dtk)
+        dan broadcast hasil analisa ke subscriber WebSocket /ws/tape/{symbol}.
+        Data ini TIDAK disimpan ke MySQL — hanya rolling history singkat
+        in-memory untuk kebutuhan analyzeBook.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/IngestOrderbookRequest'
+      responses:
+        '204':
+          description: Diterima & di-broadcast
+        '400':
+          description: Payload tidak valid
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /scan:
+    get:
+      operationId: scanWatchlist
+      summary: >
+        Scanner lintas-saham — jalankan deteksi fase & PVA untuk seluruh
+        watchlist sekaligus (window/sensitivitas default: 10 hari/sedang,
+        histori 6 bulan). Berat komputasi ditangani konkuren per-simbol.
+      responses:
+        '200':
+          description: Satu baris ringkasan per simbol
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/ScanRow'
+
+  /outlook/{symbol}:
+    get:
+      operationId: getOutlook
+      summary: >
+        Rangkuman verdict BULLISH/BEARISH/NETRAL satu simbol, menggabungkan
+        fase akumulasi/distribusi terakhir (/phases) dan PVA/VSA (/pva) jadi
+        satu skor dengan daftar sinyal pendukung tiap arah.
+      parameters:
+        - name: symbol
+          in: path
+          required: true
+          schema: { type: string }
+        - name: from
+          in: query
+          description: Default 6 bulan sebelum `to` (mengikuti kebutuhan PVA)
+          schema: { type: string, format: date }
+        - name: to
+          in: query
+          schema: { type: string, format: date }
+        - name: window
+          in: query
+          description: Panjang jendela geser deteksi fase, hari bursa (2–60)
+          schema: { type: integer, default: 10, minimum: 2, maximum: 60 }
+        - name: sensitivity
+          in: query
+          schema:
+            type: string
+            enum: [rendah, sedang, tinggi]
+            default: sedang
+      responses:
+        '200':
+          description: Verdict gabungan
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OutlookResponse'
+        '400':
+          description: Parameter tidak valid
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /alerts:
+    get:
+      operationId: listAlerts
+      summary: >
+        Riwayat notifikasi perubahan bias Outlook (BULLISH/BEARISH/NETRAL),
+        terurut terbaru dulu. Dihasilkan oleh watcher background yang
+        mengecek Outlook tiap simbol berkala; perubahan yang sama juga
+        di-broadcast real-time lewat WebSocket /ws/alerts (bentuk pesan sama
+        dengan AlertResponse, tanpa replay histori saat baru connect).
+      parameters:
+        - name: limit
+          in: query
+          schema: { type: integer, default: 50, minimum: 1, maximum: 200 }
+      responses:
+        '200':
+          description: Daftar alert, terbaru dulu
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/AlertResponse'
+        '400':
+          description: Parameter tidak valid
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /liquidity-alerts:
+    get:
+      operationId: listLiquidityAlerts
+      summary: >
+        Riwayat perubahan level anomali volume/likuiditas (normal / surge /
+        awakening / surge+awakening), terurut terbaru dulu. Dihasilkan oleh
+        watcher background yang sama dengan Outlook, dari bars_daily saja
+        (tanpa running trade) — dipakai untuk memutuskan simbol mana yang
+        layak diberi jatah crawl running trade / broker summary harian
+        alih-alih menariknya untuk seluruh universe.
+      parameters:
+        - name: limit
+          in: query
+          schema: { type: integer, default: 50, minimum: 1, maximum: 200 }
+      responses:
+        '200':
+          description: Daftar alert, terbaru dulu
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/LiquidityAlertResponse'
+        '400':
+          description: Parameter tidak valid
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /screener/liquidity-candidates:
+    get:
+      operationId: listLiquidityCandidates
+      summary: >
+        Simbol yang levelnya SEDANG tidak normal (surge / awakening /
+        surge+awakening) menurut state watcher terakhir — daftar kandidat
+        untuk dimasukkan manual ke "daftar emiten manual" bridge-extension
+        supaya running trade/broker summary daily dinyalakan khusus untuk
+        simbol-simbol ini.
+      parameters:
+        - name: limit
+          in: query
+          schema: { type: integer, default: 100, minimum: 1, maximum: 900 }
+      responses:
+        '200':
+          description: Daftar kandidat, perubahan terbaru dulu
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/LiquidityCandidateResponse'
+        '400':
+          description: Parameter tidak valid
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /ingest/trades:
+    post:
+      operationId: ingestTrades
+      summary: >
+        Terima batch cetakan running trade (diturunkan bridge-extension dari
+        delta volume/freq antar tick WebSocket Stockbit). Arah buy/sell
+        adalah tebakan uptick/downtick — indikasi tekanan, bukan data bursa
+        per-transaksi resmi.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/IngestTradesRequest'
+      responses:
+        '204': { description: Diterima }
+        '400':
+          description: Payload tidak valid
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
+
+  /ingest/broker-range:
+    post:
+      operationId: ingestBrokerRange
+      summary: >
+        Terima total buy/sell per broker se-rentang dari Scan Akumulasi/
+        Screener extension (1 request agregat per simbol, anti-spam) —
+        fallback data broker untuk simbol yang belum di-Analisa-1-Saham.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/IngestBrokerRangeRequest'
+      responses:
+        '204': { description: Diterima }
+        '400':
+          description: Payload tidak valid
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
+
+  /ingest/news:
+    post:
+      operationId: ingestNews
+      summary: Terima batch berita/post stream Stockbit yang tertangkap pasif oleh interceptor
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/IngestNewsRequest'
+      responses:
+        '204': { description: Diterima }
+        '400':
+          description: Payload tidak valid
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
+
+  /trades/{symbol}:
+    get:
+      operationId: getTrades
+      summary: >
+        Running trade tersimpan satu simbol pada satu tanggal (default:
+        tanggal terakhir yang punya data) + analisa tekanan beli/jual.
+      parameters:
+        - name: symbol
+          in: path
+          required: true
+          schema: { type: string }
+        - name: date
+          in: query
+          schema: { type: string, format: date }
+        - name: limit
+          in: query
+          schema: { type: integer, default: 0, minimum: 0, maximum: 50000, description: '0 untuk semua cetakan' }
+      responses:
+        '200':
+          description: Cetakan terbaru (descending) + ringkasan tekanan
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/TradesResponse' }
+
+  /broker-analysis/{symbol}:
+    get:
+      operationId: getBrokerAnalysis
+      summary: >
+        Analisa broker ala halaman stockbit.com/broker-analysis — total
+        buy/sell/net + harga rata-rata per broker se-rentang, share smart
+        money, konsentrasi top-3 akumulator. granularity "harian" bila data
+        per-hari tersedia (dari Analisa 1 Saham), "agregat" bila hanya dari
+        hasil scan.
+      parameters:
+        - name: symbol
+          in: path
+          required: true
+          schema: { type: string }
+        - name: from
+          in: query
+          schema: { type: string, format: date }
+        - name: to
+          in: query
+          schema: { type: string, format: date }
+      responses:
+        '200':
+          description: Analisa aliran per broker
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/BrokerAnalysisResponse' }
+
+  /news:
+    get:
+      operationId: listNews
+      summary: Berita/post stream Stockbit tersimpan, terbaru dulu
+      parameters:
+        - name: symbol
+          in: query
+          schema: { type: string }
+        - name: limit
+          in: query
+          schema: { type: integer, default: 50, minimum: 1, maximum: 200 }
+      responses:
+        '200':
+          description: Daftar berita
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/NewsItemResponse' }
+
+  /decision/{symbol}:
+    get:
+      operationId: getDecision
+      summary: >
+        Keputusan trading gabungan seluruh lensa analisa (fase+PVA, aliran
+        broker, tekanan running trade, katalis Future Earnings, valuasi) —
+        verdict BELI/PANTAU/HINDARI + rencana entry/SL/TP berbasis ATR.
+        Alat bantu keputusan pribadi, bukan nasihat keuangan.
+      parameters:
+        - name: symbol
+          in: path
+          required: true
+          schema: { type: string }
+        - name: from
+          in: query
+          description: Default 6 bulan sebelum `to`
+          schema: { type: string, format: date }
+        - name: to
+          in: query
+          schema: { type: string, format: date }
+      responses:
+        '200':
+          description: Verdict + sinyal pendukung + rencana trading
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/DecisionResponse' }
+
+  /admin/reset-data:
+    post:
+      operationId: resetData
+      summary: >
+        Kosongkan SEMUA tabel data (struktur/skema tetap) — tombol "Reset
+        Data" di terminal. Butuh confirm:true di body. Tidak bisa dibatalkan.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ResetDataRequest'
+      responses:
+        '200':
+          description: >
+            Data terhapus. Balasannya merinci tabel apa saja yang dikosongkan
+            beserta jumlah baris yang terhapus, supaya UI bisa memastikan
+            tabel yang dimaksud memang ikut dibersihkan.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status: { type: string, example: ok }
+                  tableCount: { type: integer, description: jumlah tabel yang dikosongkan }
+                  totalRows: { type: integer, description: total baris yang terhapus }
+                  tables:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        table: { type: string }
+                        rows: { type: integer, description: jumlah baris sebelum dikosongkan (-1 bila gagal dihitung) }
+                      required: [table, rows]
+                required: [status, tableCount, totalRows, tables]
+        '400':
+          description: confirm bukan true, atau body tidak valid
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
+
+  /catalysts/{symbol}:
+    get:
+      operationId: listCatalysts
+      summary: >
+        Jurnal katalis "Future Earnings" — proyek/ekspansi/tenant/pabrik/
+        kebijakan pemerintah yang bisa mempengaruhi kinerja 2 tahun ke depan.
+        Pelengkap panel Fundamental (yang berbasis rasio historis) supaya
+        analisa tidak terjebak value trap. Entri bisa berasal dari riset
+        (addedBy=riset) atau input manual (addedBy=manual).
+      parameters:
+        - name: symbol
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: Daftar katalis, terurut berdasarkan expectedPeriod
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/CatalystResponse'
+
+  /catalysts:
+    post:
+      operationId: createCatalyst
+      summary: Tambah satu entri katalis
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateCatalystRequest'
+      responses:
+        '201':
+          description: Katalis tersimpan
+        '400':
+          description: Payload tidak valid
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /catalysts/{id}:
+    patch:
+      operationId: updateCatalyst
+      summary: Ubah satu entri katalis (mis. status rumor -> confirmed)
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: integer, format: int64 }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateCatalystRequest'
+      responses:
+        '204':
+          description: Tersimpan
+        '400':
+          description: Payload tidak valid
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+    delete:
+      operationId: deleteCatalyst
+      summary: Hapus satu entri katalis
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: integer, format: int64 }
+      responses:
+        '204':
+          description: Terhapus
+
+  /macro:
+    get:
+      operationId: getMacro
+      summary: >
+        Dashboard indikator macro live: USDIDR, minyak WTI/Brent, emas,
+        tembaga, IHSG (di-cache 1 jam dari Yahoo Finance). BI Rate/Fed
+        Rate/harga Nickel/Coal sengaja tidak disertakan — bukan harga pasar
+        yang tersedia bersih di Yahoo Finance.
+      responses:
+        '200':
+          description: Nilai tiap instrumen (bisa parsial bila salah satu gagal fetch)
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/MacroQuoteResponse'
+
+  /macro/sensitivity/{symbol}:
+    get:
+      operationId: listMacroSensitivity
+      summary: Daftar tag sensitivitas faktor macro untuk satu simbol (mis. ANTM -> nickel)
+      parameters:
+        - name: symbol
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: Daftar tag
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/MacroSensitivityResponse'
+
+  /macro/sensitivity:
+    post:
+      operationId: createMacroSensitivity
+      summary: Tambah tag sensitivitas macro untuk satu simbol (manual, oleh user)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateMacroSensitivityRequest'
+      responses:
+        '201':
+          description: Tag tersimpan
+        '400':
+          description: Payload tidak valid
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /macro/sensitivity/{id}:
+    delete:
+      operationId: deleteMacroSensitivity
+      summary: Hapus satu tag sensitivitas macro
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: integer, format: int64 }
+      responses:
+        '204':
+          description: Terhapus
+
+  /fundamentals/{symbol}:
+    get:
+      operationId: getFundamentals
+      summary: >
+        Data fundamental/valuasi (P/E, P/BV, EPS, ROE, dividen, target
+        analis, dll) satu simbol, di-cache di MySQL selama 24 jam dari
+        Yahoo Finance (ticker IDX + .JK). Bila fetch ke Yahoo Finance gagal
+        (API tidak resmi, bisa rate-limit sewaktu-waktu) dan ada cache lama,
+        cache tetap dikembalikan dengan `stale: true` dan `error` terisi
+        alih-alih gagal total.
+      parameters:
+        - name: symbol
+          in: path
+          required: true
+          schema: { type: string }
+        - name: refresh
+          in: query
+          description: "\"true\" untuk memaksa fetch ulang dari Yahoo Finance, mengabaikan cache 24 jam"
+          schema: { type: string, enum: ["true", "false"], default: "false" }
+      responses:
+        '200':
+          description: Data fundamental (cache atau baru difetch)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/FundamentalsResponse'
+        '400':
+          description: Parameter tidak valid
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '502':
+          description: Fetch ke Yahoo Finance gagal dan tidak ada cache tersedia
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /bars/{symbol}:
+    get:
+      operationId: getBars
+      summary: Candle harian satu simbol untuk rentang tanggal (untuk chart)
+      parameters:
+        - name: symbol
+          in: path
+          required: true
+          schema: { type: string }
+        - name: from
+          in: query
+          schema: { type: string, format: date }
+        - name: to
+          in: query
+          schema: { type: string, format: date }
+      responses:
+        '200':
+          description: Candle harian, terurut naik berdasarkan tanggal
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/DailyBar'
+
+  /broker-summary/{symbol}:
+    get:
+      operationId: getBrokerSummary
+      summary: Broker summary (buy/sell per broker) satu simbol pada satu tanggal
+      parameters:
+        - name: symbol
+          in: path
+          required: true
+          schema: { type: string }
+        - name: date
+          in: query
+          required: true
+          schema: { type: string, format: date }
+      responses:
+        '200':
+          description: Broker summary hari itu
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BrokerSummaryDay'
+
+  /broker-summary-range/{symbol}:
+    get:
+      operationId: getBrokerSummaryRange
+      summary: >
+        Broker summary (buy/sell per broker) dijumlahkan sepanjang rentang
+        tanggal custom — pelengkap /broker-summary yang cuma satu hari.
+      parameters:
+        - name: symbol
+          in: path
+          required: true
+          schema: { type: string }
+        - name: from
+          in: query
+          description: Default 3 bulan sebelum `to`
+          schema: { type: string, format: date }
+        - name: to
+          in: query
+          schema: { type: string, format: date }
+      responses:
+        '200':
+          description: Total buy/sell per broker sepanjang rentang
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BrokerSummaryRangeResponse'
+        '400':
+          description: Parameter tidak valid
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /phases/{symbol}:
+    get:
+      operationId: getPhases
+      summary: >
+        Deteksi fase akumulasi/distribusi (sliding window atas candle harian +
+        broker summary), port dari mesin analisa bridge-extension.
+      parameters:
+        - name: symbol
+          in: path
+          required: true
+          schema: { type: string }
+        - name: from
+          in: query
+          schema: { type: string, format: date }
+        - name: to
+          in: query
+          schema: { type: string, format: date }
+        - name: window
+          in: query
+          description: Panjang jendela geser dalam hari bursa (2–60)
+          schema: { type: integer, default: 10, minimum: 2, maximum: 60 }
+        - name: sensitivity
+          in: query
+          schema:
+            type: string
+            enum: [rendah, sedang, tinggi]
+            default: sedang
+      responses:
+        '200':
+          description: Fase yang terdeteksi (bisa kosong bila data tidak cukup — lihat `error`)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PhasesResponse'
+        '400':
+          description: Parameter tidak valid
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /pva/{symbol}:
+    get:
+      operationId: getPVA
+      summary: >
+        Price-Volume Analysis (VSA + OBV) — klasifikasi effort-vs-result per
+        candle, divergensi OBV, rasio volume naik/turun, deteksi klimaks.
+        Port dari pvaAnalysis() di bridge-extension.
+      parameters:
+        - name: symbol
+          in: path
+          required: true
+          schema: { type: string }
+        - name: from
+          in: query
+          description: Default 6 bulan sebelum `to` (SMA20 & window klimaks 40 hari butuh histori panjang)
+          schema: { type: string, format: date }
+        - name: to
+          in: query
+          schema: { type: string, format: date }
+      responses:
+        '200':
+          description: Hasil PVA (bisa kosong bila data tidak cukup — lihat `error`)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PVAResponse'
+        '400':
+          description: Parameter tidak valid
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /positions:
+    post:
+      operationId: createPosition
+      summary: Catat posisi trading baru
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreatePositionRequest'
+      responses:
+        '201':
+          description: Posisi tersimpan
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CreatePositionResponse'
+        '400':
+          description: Payload tidak valid
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+    get:
+      operationId: listPositions
+      summary: Daftar posisi beserta P&L (live untuk open, realized untuk closed)
+      parameters:
+        - name: status
+          in: query
+          schema: { type: string, enum: [open, closed, all], default: open }
+      responses:
+        '200':
+          description: Daftar posisi
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/PositionResponse'
+        '400':
+          description: Parameter tidak valid
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /positions/{id}/close:
+    patch:
+      operationId: closePosition
+      summary: Tutup posisi open dengan tanggal & harga exit
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: integer, format: int64 }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ClosePositionRequest'
+      responses:
+        '204':
+          description: Posisi ditutup
+        '400':
+          description: Payload tidak valid atau posisi tidak ditemukan/sudah tertutup
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /positions/{id}:
+    delete:
+      operationId: deletePosition
+      summary: Hapus catatan posisi (mis. salah input)
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: integer, format: int64 }
+      responses:
+        '204':
+          description: Terhapus
+        '400':
+          description: Posisi tidak ditemukan
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /portfolio/summary:
+    get:
+      operationId: getPortfolioSummary
+      summary: >
+        Ringkasan posisi open: total unrealized P&L dan konsentrasi per
+        saham/sektor terhadap total nilai portofolio, dengan peringatan bila
+        melewati 20%/saham atau 40%/sektor.
+      responses:
+        '200':
+          description: Ringkasan portofolio
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PortfolioSummaryResponse'
+
+  /risk/position-size:
+    post:
+      operationId: calculatePositionSize
+      summary: Kalkulator ukuran posisi berdasarkan aturan risiko 2% (atau custom)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PositionSizeRequest'
+      responses:
+        '200':
+          description: Hasil kalkulasi (lihat `error` bila input tidak valid)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PositionSizeResponse'
+
+  /keystats/{symbol}:
+    get:
+      operationId: getKeyStats
+      summary: Rasio fundamental ringkas dari Stockbit (di-push extension), cache tanpa TTL
+      parameters:
+        - name: symbol
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: Rasio fundamental (kosong bila belum pernah di-push dari extension)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/KeyStatsResponse'
+
+  /dividends/{symbol}:
+    get:
+      operationId: getDividends
+      summary: Riwayat dividen tunai (di-push extension dari corpaction/dividend)
+      parameters:
+        - name: symbol
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: Daftar dividen, terbaru dahulu
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/DividendResponse'
+
+  /financial-statements/{symbol}:
+    get:
+      operationId: getFinancialStatements
+      summary: >
+        Laporan keuangan mentah (Laba Rugi/Neraca/Arus Kas x Kuartalan/Tahunan),
+        di-push on-demand per simbol dari tab Push Data extension.
+      parameters:
+        - name: symbol
+          in: path
+          required: true
+          schema: { type: string }
+        - name: reportType
+          in: query
+          schema: { type: string, enum: [income, balance, cashflow] }
+        - name: statementType
+          in: query
+          schema: { type: string, enum: [quarterly, annual] }
+      responses:
+        '200':
+          description: Daftar item laporan keuangan
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/FinancialStatementItemResponse'
+
+  /insider-transactions:
+    get:
+      operationId: getInsiderTransactions
+      summary: Transaksi insider/pemegang saham utama (di-push extension)
+      parameters:
+        - name: symbol
+          in: query
+          schema: { type: string }
+      responses:
+        '200':
+          description: Daftar transaksi insider, terbaru dahulu
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/InsiderTransactionResponse'
+
+  /ai/outlook/{symbol}:
+    post:
+      operationId: generateAIOutlook
+      summary: >
+        Rangkum Decision + fundamental + dividen + tren laporan keuangan +
+        insider + katalis + berita + makro satu simbol jadi narasi via Gemini.
+        API key dikirim per-request dari browser (localStorage user), TIDAK
+        disimpan di server.
+      parameters:
+        - name: symbol
+          in: path
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AIOutlookRequest'
+      responses:
+        '200':
+          description: Narasi analisa AI
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AIOutlookResponse'
+        '400':
+          description: API key kosong / simbol tidak valid
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '502':
+          description: Gagal memanggil Gemini API
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /technical/{symbol}:
+    get:
+      operationId: getTechnical
+      summary: >
+        Indikator teknikal (MA/EMA/RSI/Stochastic/ATR), Classic Pivot,
+        pola candlestick, volume surge, dan konfluensi teknikal + aliran
+        broker satu simbol. Bar selalu ditarik 500 hari ke belakang
+        (EMA200 & posisi 52 minggu butuh riwayat panjang); from/to hanya
+        membatasi jendela broker flow untuk konfluensi.
+      parameters:
+        - name: symbol
+          in: path
+          required: true
+          schema: { type: string }
+        - name: from
+          in: query
+          schema: { type: string, format: date }
+        - name: to
+          in: query
+          schema: { type: string, format: date }
+      responses:
+        '200':
+          description: Analisa teknikal + konfluensi
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TechnicalResponse'
+        '400':
+          description: Tanggal tidak valid
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /foreign-radar:
+    get:
+      operationId: getForeignRadar
+      summary: >
+        Konsistensi akumulasi/distribusi broker asing lintas simbol:
+        peringkat harian, rentetan (streak), net asing, dan rotasi sektor.
+      parameters:
+        - name: from
+          in: query
+          schema: { type: string, format: date }
+        - name: to
+          in: query
+          description: Bawaan = tanggal terakhir yang punya broker summary.
+          schema: { type: string, format: date }
+        - name: mode
+          in: query
+          schema: { type: string, enum: [akumulasi, distribusi], default: akumulasi }
+        - name: limit
+          in: query
+          schema: { type: integer, default: 40 }
+      responses:
+        '200':
+          description: Tabel radar asing
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ForeignRadarResponse'
+        '400':
+          description: Parameter tidak valid
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /broker-intel:
+    get:
+      operationId: getBrokerIntel
+      summary: >
+        Peringkat pasangan broker x saham berdasarkan net value, lengkap
+        dengan heatmap harian, konsistensi, harga rata-rata, dan P/L
+        mengambang terhadap harga penutupan terakhir.
+      parameters:
+        - name: from
+          in: query
+          schema: { type: string, format: date }
+        - name: to
+          in: query
+          schema: { type: string, format: date }
+        - name: mode
+          in: query
+          schema: { type: string, enum: [accum, dist], default: accum }
+        - name: symbol
+          in: query
+          description: Batasi ke satu saham.
+          schema: { type: string }
+        - name: brokers
+          in: query
+          description: Daftar kode broker dipisah koma.
+          schema: { type: string }
+        - name: limit
+          in: query
+          schema: { type: integer, default: 40 }
+      responses:
+        '200':
+          description: Baris broker x saham terurut net value
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BrokerIntelResponse'
+        '400':
+          description: Parameter tidak valid
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /broker-profiler:
+    get:
+      operationId: getBrokerProfiler
+      summary: >
+        Portofolio satu sampai lima broker: kurva net kumulatif per saham,
+        top buys/sells, dan total beli/jual sepanjang rentang.
+      parameters:
+        - name: brokers
+          in: query
+          required: true
+          description: Daftar kode broker dipisah koma (maksimal 5 dipakai).
+          schema: { type: string, example: 'MG,YP' }
+        - name: from
+          in: query
+          schema: { type: string, format: date }
+        - name: to
+          in: query
+          schema: { type: string, format: date }
+      responses:
+        '200':
+          description: Portofolio broker
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BrokerProfilerResponse'
+        '400':
+          description: Parameter brokers kosong / tanggal tidak valid
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /stock-profile/{symbol}:
+    get:
+      operationId: getStockProfile
+      summary: >
+        Profil aliran dana satu saham: net asing multi-horizon, aliran per
+        kategori broker, akumulator floor, rasio net vs gross, kurva
+        inventory broker, dan kekuatan relatif terhadap IHSG.
+      parameters:
+        - name: symbol
+          in: path
+          required: true
+          schema: { type: string }
+        - name: from
+          in: query
+          schema: { type: string, format: date }
+        - name: to
+          in: query
+          schema: { type: string, format: date }
+      responses:
+        '200':
+          description: Profil saham
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StockProfileResponse'
+        '400':
+          description: Parameter tidak valid
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /sid:
+    get:
+      operationId: getSID
+      summary: >
+        Perubahan jumlah pemegang saham (SID) dan porsi scripless antar bulan
+        laporan KSEI, per emiten. Sumber datanya relay endpoint shareholding
+        network Stockbit lewat bridge extension.
+      parameters:
+        - name: month
+          in: query
+          description: Saring ke satu tanggal laporan (YYYY-MM-DD).
+          schema: { type: string, format: date }
+        - name: symbol
+          in: query
+          schema: { type: string }
+        - name: sort
+          in: query
+          schema:
+            type: string
+            enum: [chg1m, chg1m_asc, scripless, holders]
+        - name: limit
+          in: query
+          schema: { type: integer, default: 200 }
+      responses:
+        '200':
+          description: Tabel SID & scripless
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SIDResponse'
+        '400':
+          description: Parameter tidak valid
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /shareholding/{symbol}:
+    get:
+      operationId: getShareholdingComposition
+      summary: >
+        Komposisi pemegang saham satu emiten pada bulan laporan terakhir,
+        dibandingkan dengan bulan sebelumnya (termasuk investor yang hilang).
+      parameters:
+        - name: symbol
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: Komposisi kepemilikan
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CompositionResponse'
+
+  /shareholding-divergence:
+    get:
+      operationId: getShareholdingDivergence
+      summary: >
+        Divergensi arah jumlah pemegang saham terhadap arah harga pada rentang
+        bulan laporan yang sama — pemegang naik saat harga turun menandakan
+        distribusi ke ritel, dan sebaliknya.
+      parameters:
+        - name: limit
+          in: query
+          schema: { type: integer, default: 100 }
+      responses:
+        '200':
+          description: Daftar divergensi, paling ekstrem dahulu
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DivergenceResponse'
+
+components:
+  schemas:
+
+    Pivot:
+      type: object
+      required: [r2, r1, p, s1, s2]
+      properties:
+        r2: { type: number }
+        r1: { type: number }
+        p: { type: number }
+        s1: { type: number }
+        s2: { type: number }
+
+    CandlePattern:
+      type: object
+      required: [name, bias, note]
+      properties:
+        name: { type: string, example: Hammer }
+        bias:
+          type: string
+          enum: [bullish, bearish, netral]
+        note: { type: string }
+
+    VolumeSurge:
+      type: object
+      required: [volume, avg20, ratio, surgePct, label, bias]
+      properties:
+        volume: { type: integer, format: int64 }
+        avg20:
+          type: number
+          description: Rata-rata volume 20 hari, TIDAK termasuk bar terakhir.
+        ratio: { type: number }
+        surgePct: { type: number }
+        label: { type: string, example: High Institutional Volume }
+        bias:
+          type: string
+          enum: [bullish, bearish, netral]
+
+    HorizonReturn:
+      type: object
+      required: [label, changePct, ok]
+      properties:
+        label: { type: string, example: 1M }
+        changePct: { type: number }
+        ok:
+          type: boolean
+          description: false kalau riwayat bar belum cukup panjang.
+
+    TechnicalAnalysis:
+      type: object
+      required:
+        [lastDate, open, high, low, close, change, changePct, ma9, ema20, ema200,
+         trendMa, trendMajor, rsi14, rsiLabel, stochK, stochD, stochLabel, atr14,
+         atrPct, pivot, target, stopLoss, riskReward, distToR1Pct, distToS1Pct,
+         candle, volumeSurge, returns, week52High, week52Low, week52Pos, verdict, score]
+      properties:
+        lastDate: { type: string, format: date }
+        open: { type: number }
+        high: { type: number }
+        low: { type: number }
+        close: { type: number }
+        change: { type: number }
+        changePct: { type: number }
+        ma9: { type: number }
+        ema20: { type: number }
+        ema200:
+          type: number
+          description: 0 kalau riwayat bar kurang dari 200.
+        trendMa: { type: string, enum: [Bullish, Neutral, Bearish] }
+        trendMajor: { type: string, enum: [Bullish, Neutral, Bearish] }
+        rsi14: { type: number }
+        rsiLabel: { type: string }
+        stochK: { type: number }
+        stochD: { type: number }
+        stochLabel: { type: string }
+        atr14: { type: number }
+        atrPct: { type: number }
+        pivot: { $ref: '#/components/schemas/Pivot' }
+        target: { type: number, description: 'Resistance 1' }
+        stopLoss: { type: number, description: 'Support 1' }
+        riskReward: { type: number }
+        distToR1Pct: { type: number }
+        distToS1Pct: { type: number }
+        candle: { $ref: '#/components/schemas/CandlePattern' }
+        volumeSurge: { $ref: '#/components/schemas/VolumeSurge' }
+        returns:
+          type: array
+          items: { $ref: '#/components/schemas/HorizonReturn' }
+        week52High: { type: number }
+        week52Low: { type: number }
+        week52Pos: { type: number, description: '0..100' }
+        verdict: { type: string }
+        score: { type: integer, description: '0..100, 50 = netral' }
+
+    Confluence:
+      type: object
+      required: [score, label, analysis, brokerFlow, techMomentum]
+      properties:
+        score: { type: integer, description: '0..100' }
+        label: { type: string }
+        analysis: { type: string }
+        brokerFlow: { type: string }
+        techMomentum: { type: string }
+
+    TechnicalResponse:
+      type: object
+      required: [symbol, technical, confluence]
+      properties:
+        symbol: { type: string }
+        technical: { $ref: '#/components/schemas/TechnicalAnalysis' }
+        confluence: { $ref: '#/components/schemas/Confluence' }
+        error:
+          type: string
+          description: Terisi kalau bar harian belum cukup untuk dianalisa.
+
+    RadarCell:
+      type: object
+      required: [date, netVal, rank, hit]
+      properties:
+        date: { type: string, format: date }
+        netVal: { type: number }
+        rank:
+          type: integer
+          description: Peringkat net asing hari itu; 0 kalau tidak searah filter.
+        hit: { type: boolean }
+
+    RadarRow:
+      type: object
+      required: [symbol, cells, days, totalDays, streak, netVal, avgRank, returnPct, hasReturn]
+      properties:
+        symbol: { type: string }
+        sector: { type: string }
+        cells:
+          type: array
+          items: { $ref: '#/components/schemas/RadarCell' }
+        days: { type: integer }
+        totalDays: { type: integer }
+        streak: { type: integer }
+        netVal: { type: number }
+        avgRank: { type: number }
+        returnPct: { type: number }
+        hasReturn: { type: boolean }
+
+    SectorFlow:
+      type: object
+      required: [sector, netVal, symbols, sharePct]
+      properties:
+        sector: { type: string }
+        netVal: { type: number }
+        symbols: { type: integer }
+        sharePct: { type: number }
+
+    ForeignRadarResponse:
+      type: object
+      required: [from, to, mode, tradingDays, detected, dates, rows, sectors]
+      properties:
+        from: { type: string, format: date }
+        to: { type: string, format: date }
+        mode: { type: string, enum: [akumulasi, distribusi] }
+        tradingDays: { type: integer }
+        detected: { type: integer }
+        mostConsistent: { type: string }
+        topStreak: { type: string }
+        dates:
+          type: array
+          items: { type: string, format: date }
+        rows:
+          type: array
+          items: { $ref: '#/components/schemas/RadarRow' }
+        sectors:
+          type: array
+          items: { $ref: '#/components/schemas/SectorFlow' }
+
+    HeatCell:
+      type: object
+      required: [date, netVal]
+      properties:
+        date: { type: string, format: date }
+        netVal: { type: number }
+
+    BrokerStockRow:
+      type: object
+      required:
+        [brokerCode, brokerName, brokerType, symbol, buyVal, sellVal, netVal,
+         buyLot, sellLot, netLot, avgPrice, lastClose, floatPlPct, hasPl,
+         daysNet, daysTotal, heat]
+      properties:
+        brokerCode: { type: string }
+        brokerName: { type: string }
+        brokerType:
+          type: string
+          enum: [asing, bumn, lokal-inst, campuran, ritel, ritel-online, lain]
+        symbol: { type: string }
+        buyVal: { type: number }
+        sellVal: { type: number }
+        netVal: { type: number }
+        buyLot: { type: integer, format: int64 }
+        sellLot: { type: integer, format: int64 }
+        netLot: { type: integer, format: int64 }
+        avgPrice:
+          type: number
+          description: Harga rata-rata pada sisi dominan (beli kalau net beli).
+        lastClose: { type: number }
+        floatPlPct: { type: number }
+        hasPl: { type: boolean }
+        daysNet: { type: integer }
+        daysTotal: { type: integer }
+        heat:
+          type: array
+          items: { $ref: '#/components/schemas/HeatCell' }
+
+    BrokerIntelResponse:
+      type: object
+      required: [from, to, mode, rows]
+      properties:
+        from: { type: string, format: date }
+        to: { type: string, format: date }
+        mode: { type: string, enum: [accum, dist] }
+        dates:
+          type: array
+          items: { type: string, format: date }
+        rows:
+          type: array
+          items: { $ref: '#/components/schemas/BrokerStockRow' }
+
+    PortfolioPoint:
+      type: object
+      required: [date, cumNet]
+      properties:
+        date: { type: string, format: date }
+        cumNet: { type: number }
+
+    PortfolioSeries:
+      type: object
+      required: [symbol, netVal, points]
+      properties:
+        symbol: { type: string }
+        netVal: { type: number }
+        points:
+          type: array
+          items: { $ref: '#/components/schemas/PortfolioPoint' }
+
+    BrokerIdentity:
+      type: object
+      required: [code, name, type]
+      properties:
+        code: { type: string }
+        name: { type: string }
+        type: { type: string }
+
+    BrokerProfilerResponse:
+      type: object
+      required: [from, to, brokers, flow, topBuys, topSells, totalNet, totalBuy, totalSell]
+      properties:
+        from: { type: string, format: date }
+        to: { type: string, format: date }
+        brokers:
+          type: array
+          items: { $ref: '#/components/schemas/BrokerIdentity' }
+        dates:
+          type: array
+          items: { type: string, format: date }
+        flow:
+          type: array
+          items: { $ref: '#/components/schemas/PortfolioSeries' }
+        topBuys:
+          type: array
+          items: { $ref: '#/components/schemas/BrokerStockRow' }
+        topSells:
+          type: array
+          items: { $ref: '#/components/schemas/BrokerStockRow' }
+        totalNet: { type: number }
+        totalBuy: { type: number }
+        totalSell: { type: number }
+
+    CategoryDay:
+      type: object
+      required: [date, netVal]
+      properties:
+        date: { type: string, format: date }
+        netVal: { type: number }
+
+    CategoryFlow:
+      type: object
+      required: [key, label, netVal, grossVal, days]
+      properties:
+        key:
+          type: string
+          enum: [asing, institusi, smart-retail, ritel]
+        label: { type: string }
+        netVal: { type: number }
+        grossVal: { type: number }
+        days:
+          type: array
+          items: { $ref: '#/components/schemas/CategoryDay' }
+
+    FloorAccumulator:
+      type: object
+      required: [code, name, type, accumDays, totalDays, netVal, netLot, floorPrice, vsFloorPct, hasFloor]
+      properties:
+        code: { type: string }
+        name: { type: string }
+        type: { type: string }
+        accumDays: { type: integer }
+        totalDays: { type: integer }
+        netVal: { type: number }
+        netLot: { type: integer, format: int64 }
+        floorPrice:
+          type: number
+          description: Harga rata-rata beli broker sepanjang rentang.
+        vsFloorPct:
+          type: number
+          description: Posisi harga penutupan terakhir terhadap floor.
+        hasFloor: { type: boolean }
+
+    NetVsGross:
+      type: object
+      required: [code, name, side, netVal, grossVal, netPct]
+      properties:
+        code: { type: string }
+        name: { type: string }
+        side: { type: string, enum: [buy, sell] }
+        netVal: { type: number }
+        grossVal: { type: number }
+        netPct:
+          type: number
+          description: '|net| / gross * 100 — konviksi arah broker.'
+
+    InventorySeries:
+      type: object
+      required: [code, name, type, side, netVal, points]
+      properties:
+        code: { type: string }
+        name: { type: string }
+        type: { type: string }
+        side: { type: string, enum: [buy, sell] }
+        netVal: { type: number }
+        points:
+          type: array
+          items: { $ref: '#/components/schemas/PortfolioPoint' }
+
+    ForeignFlowWindow:
+      type: object
+      required: [label, days, netVal, ok]
+      properties:
+        label: { type: string, example: 20D }
+        days: { type: integer }
+        netVal: { type: number }
+        ok: { type: boolean }
+
+    RelativeStrength:
+      type: object
+      required: [stockPct, indexPct, relPct, available]
+      properties:
+        stockPct: { type: number }
+        indexPct: { type: number }
+        relPct: { type: number }
+        available:
+          type: boolean
+          description: false kalau bar harian IHSG belum ada di database.
+
+    StockProfileResponse:
+      type: object
+      required:
+        [symbol, from, to, dates, lastClose, foreignFlow, categories, floorTop,
+         netVsGross, inventory, priceLine, vsIndex, totalValue]
+      properties:
+        symbol: { type: string }
+        from: { type: string, format: date }
+        to: { type: string, format: date }
+        dates:
+          type: array
+          items: { type: string, format: date }
+        lastClose: { type: number }
+        foreignFlow:
+          type: array
+          items: { $ref: '#/components/schemas/ForeignFlowWindow' }
+        categories:
+          type: array
+          items: { $ref: '#/components/schemas/CategoryFlow' }
+        floorTop:
+          type: array
+          items: { $ref: '#/components/schemas/FloorAccumulator' }
+        netVsGross:
+          type: array
+          items: { $ref: '#/components/schemas/NetVsGross' }
+        inventory:
+          type: array
+          items: { $ref: '#/components/schemas/InventorySeries' }
+        priceLine:
+          type: array
+          description: Harga penutupan harian; nilainya ada di field cumNet.
+          items: { $ref: '#/components/schemas/PortfolioPoint' }
+        vsIndex: { $ref: '#/components/schemas/RelativeStrength' }
+        totalValue: { type: number }
+
+
+    SIDPoint:
+      type: object
+      required: [reportDate, investors, scriplessPct, totalShares, foreignPct]
+      properties:
+        reportDate: { type: string, format: date }
+        investors: { type: integer }
+        scriplessPct: { type: number }
+        totalShares: { type: integer, format: int64 }
+        foreignPct: { type: number }
+
+    SIDRow:
+      type: object
+      required:
+        [symbol, reportDate, investors, trend, chg1m, chg3m, pct1m, pct3m,
+         has1m, has3m, scriplessPct, scriplessChg1m, foreignPct, foreignChg1m, totalShares]
+      properties:
+        symbol: { type: string }
+        reportDate: { type: string, format: date }
+        investors: { type: integer }
+        trend:
+          type: array
+          items: { $ref: '#/components/schemas/SIDPoint' }
+        chg1m: { type: integer }
+        chg3m: { type: integer }
+        pct1m: { type: number }
+        pct3m: { type: number }
+        has1m:
+          type: boolean
+          description: false kalau belum ada bulan laporan pembanding.
+        has3m: { type: boolean }
+        scriplessPct: { type: number }
+        scriplessChg1m:
+          type: number
+          description: Selisih dalam POIN persentase, bukan persen relatif.
+        foreignPct: { type: number }
+        foreignChg1m: { type: number }
+        totalShares: { type: integer, format: int64 }
+
+    ShareholdingCoverage:
+      type: object
+      required: [symbols, investors, rows, months]
+      properties:
+        symbols: { type: integer }
+        investors: { type: integer }
+        rows: { type: integer }
+        months: { type: integer }
+        latestDate: { type: string, format: date }
+
+    SIDResponse:
+      type: object
+      required: [months, rows, coverage]
+      properties:
+        months:
+          type: array
+          items: { type: string, format: date }
+        rows:
+          type: array
+          items: { $ref: '#/components/schemas/SIDRow' }
+        coverage: { $ref: '#/components/schemas/ShareholdingCoverage' }
+
+    InvestorHolding:
+      type: object
+      required:
+        [investorId, name, type, location, classification, domicile, scrip,
+         scripless, totalShares, percentage, chgShares, chgPct, isNew, hasPrev]
+      properties:
+        investorId: { type: integer, format: int64 }
+        name: { type: string }
+        type: { type: string }
+        location: { type: string, example: Local }
+        classification: { type: string, example: Corporate }
+        domicile: { type: string }
+        scrip: { type: integer, format: int64 }
+        scripless: { type: integer, format: int64 }
+        totalShares: { type: integer, format: int64 }
+        percentage: { type: number }
+        chgShares: { type: integer, format: int64 }
+        chgPct: { type: number }
+        isNew: { type: boolean }
+        hasPrev: { type: boolean }
+
+    ClassificationSlice:
+      type: object
+      required: [label, holders, totalShares, sharePct, chgShares]
+      properties:
+        label: { type: string }
+        holders: { type: integer }
+        totalShares: { type: integer, format: int64 }
+        sharePct: { type: number }
+        chgShares: { type: integer, format: int64 }
+
+    CompositionResponse:
+      type: object
+      required:
+        [symbol, reportDate, months, holders, byClassification, byLocation,
+         trend, totalShares, scriplessPct, investors, goneHolders]
+      properties:
+        symbol: { type: string }
+        reportDate: { type: string, format: date }
+        prevReportDate: { type: string, format: date }
+        months:
+          type: array
+          items: { type: string, format: date }
+        holders:
+          type: array
+          items: { $ref: '#/components/schemas/InvestorHolding' }
+        byClassification:
+          type: array
+          items: { $ref: '#/components/schemas/ClassificationSlice' }
+        byLocation:
+          type: array
+          items: { $ref: '#/components/schemas/ClassificationSlice' }
+        trend:
+          type: array
+          items: { $ref: '#/components/schemas/SIDPoint' }
+        totalShares: { type: integer, format: int64 }
+        scriplessPct: { type: number }
+        investors: { type: integer }
+        goneHolders:
+          type: array
+          description: Investor yang ada bulan lalu tapi hilang bulan ini.
+          items: { $ref: '#/components/schemas/InvestorHolding' }
+
+    DivergenceRow:
+      type: object
+      required: [symbol, reportDate, holderChgPct, priceChgPct, gap, signal, note, investors, hasPrice]
+      properties:
+        symbol: { type: string }
+        reportDate: { type: string, format: date }
+        holderChgPct: { type: number }
+        priceChgPct: { type: number }
+        gap: { type: number }
+        signal:
+          type: string
+          enum: [DISTRIBUSI KE RITEL, AKUMULASI, PARTISIPASI LUAS, KAPITULASI, NETRAL, TIDAK DIKETAHUI]
+        note: { type: string }
+        investors: { type: integer }
+        hasPrice:
+          type: boolean
+          description: false kalau bar harian pada rentang bulan laporan belum ada.
+
+    DivergenceResponse:
+      type: object
+      required: [rows]
+      properties:
+        rows:
+          type: array
+          items: { $ref: '#/components/schemas/DivergenceRow' }
+
+    HealthResponse:
+      type: object
+      required: [status]
+      properties:
+        status:
+          type: string
+          example: ok
+        env:
+          type: string
+          example: development
+        db:
+          type: string
+          description: Pesan error koneksi DB (hanya muncul kalau status bukan ok)
+
+    ErrorResponse:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: string
+
+    DailyBar:
+      type: object
+      required: [date, open, high, low, close, volume]
+      properties:
+        date:
+          type: string
+          format: date
+          example: '2026-07-23'
+        open:
+          type: number
+        high:
+          type: number
+        low:
+          type: number
+        close:
+          type: number
+        volume:
+          type: integer
+          format: int64
+        value:
+          type: number
+          nullable: true
+        freq:
+          type: integer
+          nullable: true
+        foreignBuy:
+          type: integer
+          format: int64
+          nullable: true
+        foreignSell:
+          type: integer
+          format: int64
+          nullable: true
+        foreignFlow:
+          type: integer
+          format: int64
+          nullable: true
+
+    IngestBarsRequest:
+      type: object
+      required: [symbol, bars]
+      properties:
+        symbol:
+          type: string
+          example: BBCA
+        source:
+          type: string
+          example: bridge
+          default: bridge
+        bars:
+          type: array
+          items:
+            $ref: '#/components/schemas/DailyBar'
+
+    BrokerRow:
+      type: object
+      required: [brokerCode, value, lot, freq]
+      properties:
+        brokerCode:
+          type: string
+          example: AK
+        value:
+          type: number
+        lot:
+          type: integer
+          format: int64
+        freq:
+          type: integer
+
+    IngestBrokerSummaryRequest:
+      type: object
+      required: [symbol, date, buyers, sellers]
+      properties:
+        symbol:
+          type: string
+          example: BBCA
+        date:
+          type: string
+          format: date
+          example: '2026-07-23'
+        buyers:
+          type: array
+          items:
+            $ref: '#/components/schemas/BrokerRow'
+        sellers:
+          type: array
+          items:
+            $ref: '#/components/schemas/BrokerRow'
+
+    BrokerSummaryDay:
+      type: object
+      required: [symbol, date, buyers, sellers]
+      properties:
+        symbol:
+          type: string
+          example: BBCA
+        date:
+          type: string
+          format: date
+          example: '2026-07-23'
+        buyers:
+          type: array
+          items:
+            $ref: '#/components/schemas/BrokerRow'
+        sellers:
+          type: array
+          items:
+            $ref: '#/components/schemas/BrokerRow'
+
+    BrokerSummaryRangeResponse:
+      type: object
+      required: [symbol, from, to, buyers, sellers]
+      properties:
+        symbol:
+          type: string
+          example: BBCA
+        from:
+          type: string
+          format: date
+        to:
+          type: string
+          format: date
+        buyers:
+          type: array
+          items:
+            $ref: '#/components/schemas/BrokerRow'
+        sellers:
+          type: array
+          items:
+            $ref: '#/components/schemas/BrokerRow'
+
+    WatchlistItem:
+      type: object
+      required: [symbol]
+      properties:
+        symbol:
+          type: string
+          example: BBCA
+        name:
+          type: string
+        sector:
+          type: string
+          nullable: true
+        date:
+          type: string
+          format: date
+          nullable: true
+          description: Tanggal bar terakhir yang tersimpan (null bila belum ada data)
+        close:
+          type: number
+          nullable: true
+        prevClose:
+          type: number
+          nullable: true
+        changePct:
+          type: number
+          nullable: true
+        volume:
+          type: integer
+          format: int64
+          nullable: true
+
+    PhaseBrokerNet:
+      type: object
+      required: [code, net]
+      properties:
+        code:
+          type: string
+          example: AK
+        net:
+          type: number
+          description: Net buy (+) / net sell (-) broker ini sepanjang fase (Rp)
+
+    Phase:
+      type: object
+      required:
+        - type
+        - actor
+        - avgTrx
+        - avgPrice
+        - fromDate
+        - toDate
+        - priceLow
+        - priceHigh
+        - topBrokers
+        - flow
+        - smartShare
+        - days
+      properties:
+        type:
+          type: string
+          enum: [AKUMULASI, DISTRIBUSI]
+        actor:
+          type: string
+          enum: [SMART MONEY, RITEL]
+        avgTrx:
+          type: number
+          description: Nilai rata-rata per transaksi broker motor (Rp)
+        avgPrice:
+          type: number
+          description: Harga rata-rata transaksi broker motor (cost bandar)
+        fromDate:
+          type: string
+          format: date
+        toDate:
+          type: string
+          format: date
+        priceLow:
+          type: number
+        priceHigh:
+          type: number
+        topBrokers:
+          type: array
+          items:
+            $ref: '#/components/schemas/PhaseBrokerNet'
+        flow:
+          type: number
+          description: Total |net| dari broker motor (top 3)
+        smartShare:
+          type: number
+          description: 0..1, porsi flow dari broker smart-money
+        days:
+          type: integer
+
+    PhasesResponse:
+      type: object
+      required: [symbol, window, sensitivity, phases]
+      properties:
+        symbol:
+          type: string
+        window:
+          type: integer
+        sensitivity:
+          type: string
+          enum: [rendah, sedang, tinggi]
+        phases:
+          type: array
+          items:
+            $ref: '#/components/schemas/Phase'
+        error:
+          type: string
+          description: Pesan bila data tidak cukup untuk deteksi (phases akan kosong)
+
+    PVARow:
+      type: object
+      required: [date, close, chgPct, volRel, class, score]
+      properties:
+        date:
+          type: string
+          format: date
+        close:
+          type: number
+        chgPct:
+          type: number
+          description: Perubahan close vs hari sebelumnya (persen)
+        volRel:
+          type: number
+          description: Volume hari itu relatif terhadap SMA(volume,20) hari sebelumnya
+        class:
+          type: string
+          enum:
+            - DEMAND KUAT
+            - ABSORPSI SUPPLY
+            - NO DEMAND
+            - naik normal
+            - SUPPLY KUAT
+            - ABSORPSI DEMAND
+            - NO SUPPLY
+            - turun normal
+        desc:
+          type: string
+        score:
+          type: integer
+
+    Climax:
+      type: object
+      required: [type, desc, date]
+      properties:
+        type:
+          type: string
+          enum: [SELLING CLIMAX, BUYING CLIMAX]
+        desc:
+          type: string
+        date:
+          type: string
+          format: date
+
+    PVAResponse:
+      type: object
+      required: [symbol, rows, obvText, upDownRatio, dominance, score, bias]
+      properties:
+        symbol:
+          type: string
+        rows:
+          type: array
+          items:
+            $ref: '#/components/schemas/PVARow'
+        obvText:
+          type: string
+        obvSignal:
+          type: string
+          enum: [bull, bear]
+        upDownRatio:
+          type: number
+          description: Rasio volume hari naik vs turun, 20 hari terakhir
+        dominance:
+          type: string
+          enum: [demand, supply, seimbang]
+        climax:
+          $ref: '#/components/schemas/Climax'
+        score:
+          type: integer
+        bias:
+          type: string
+          enum: [BULLISH, BEARISH, NETRAL]
+        error:
+          type: string
+          description: Pesan bila data tidak cukup untuk analisa (rows akan kosong)
+
+    ScanRow:
+      type: object
+      required: [symbol, name]
+      properties:
+        symbol:
+          type: string
+        name:
+          type: string
+        sector:
+          type: string
+          nullable: true
+        date:
+          type: string
+          format: date
+          nullable: true
+        close:
+          type: number
+          nullable: true
+        changePct:
+          type: number
+          nullable: true
+        phase:
+          $ref: '#/components/schemas/Phase'
+          description: Fase terakhir/sedang berjalan (window 10 hari, sensitivitas sedang), null bila tidak ada
+        pvaBias:
+          type: string
+          enum: [BULLISH, BEARISH, NETRAL]
+        pvaScore:
+          type: integer
+        climax:
+          $ref: '#/components/schemas/Climax'
+
+    OrderbookLevel:
+      type: object
+      required: [price, lot, orders]
+      properties:
+        price:
+          type: number
+        lot:
+          type: number
+        orders:
+          type: integer
+        lotPerOrder:
+          type: number
+          description: lot/orders — hanya ada di pesan WS (dihitung server), tidak perlu dikirim saat ingest
+
+    IngestOrderbookRequest:
+      type: object
+      required: [symbol, last, bid, offer, value, volume, freq]
+      properties:
+        symbol:
+          type: string
+          example: BBCA
+        last:
+          type: number
+        bid:
+          type: array
+          items:
+            $ref: '#/components/schemas/OrderbookLevel'
+        offer:
+          type: array
+          items:
+            $ref: '#/components/schemas/OrderbookLevel'
+        value:
+          type: number
+        volume:
+          type: number
+        freq:
+          type: integer
+
+    OrderbookSnapshot:
+      type: object
+      description: Bentuk pesan yang di-broadcast lewat WebSocket /ws/tape/{symbol} (field snapshot)
+      required: [symbol, ts, last, bid, offer, value, volume, freq]
+      properties:
+        symbol:
+          type: string
+        ts:
+          type: integer
+          format: int64
+          description: Unix millis, di-stamp server saat menerima
+        last:
+          type: number
+        bid:
+          type: array
+          items:
+            $ref: '#/components/schemas/OrderbookLevel'
+        offer:
+          type: array
+          items:
+            $ref: '#/components/schemas/OrderbookLevel'
+        value:
+          type: number
+        volume:
+          type: number
+        freq:
+          type: integer
+
+    FakeLevel:
+      type: object
+      required: [side, price, lot, orders, lotPerOrder]
+      properties:
+        side:
+          type: string
+          enum: [bid, offer]
+        price:
+          type: number
+        lot:
+          type: number
+        orders:
+          type: integer
+        lotPerOrder:
+          type: number
+
+    WallPull:
+      type: object
+      required: [side, price, lot, orders]
+      properties:
+        side:
+          type: string
+          enum: [bid, offer]
+        price:
+          type: number
+        lot:
+          type: number
+        orders:
+          type: integer
+
+    BookAnalysis:
+      type: object
+      description: Bentuk pesan yang di-broadcast lewat WebSocket /ws/tape/{symbol} (field analysis)
+      required:
+        - totalBid
+        - totalOffer
+        - imbalance
+        - fake
+        - pulls
+        - volMoved
+        - realBuyLot
+        - realSellLot
+        - realBuyVal
+        - realSellVal
+        - aggressor
+        - marketQuiet
+      properties:
+        totalBid:
+          type: number
+        totalOffer:
+          type: number
+        imbalance:
+          type: number
+          description: -1..1, positif = bid dominan
+        fake:
+          type: array
+          items:
+            $ref: '#/components/schemas/FakeLevel'
+        pulls:
+          type: array
+          items:
+            $ref: '#/components/schemas/WallPull'
+        volMoved:
+          type: number
+        realBuyLot:
+          type: number
+        realSellLot:
+          type: number
+        realBuyVal:
+          type: number
+        realSellVal:
+          type: number
+        aggressor:
+          type: string
+          enum: [BUY, SELL, '']
+        marketQuiet:
+          type: boolean
+
+    TapeMessage:
+      type: object
+      description: Pesan JSON yang dikirim lewat WebSocket /ws/tape/{symbol} tiap ada snapshot baru
+      required: [snapshot, analysis]
+      properties:
+        snapshot:
+          $ref: '#/components/schemas/OrderbookSnapshot'
+        analysis:
+          $ref: '#/components/schemas/BookAnalysis'
+
+    CreatePositionRequest:
+      type: object
+      required: [symbol, entryDate, entryPrice, lot]
+      properties:
+        symbol:
+          type: string
+          example: BBCA
+        entryDate:
+          type: string
+          format: date
+        entryPrice:
+          type: number
+        lot:
+          type: integer
+          format: int64
+        stopLoss:
+          type: number
+          nullable: true
+        takeProfit:
+          type: number
+          nullable: true
+        notes:
+          type: string
+          nullable: true
+
+    CreatePositionResponse:
+      type: object
+      required: [id]
+      properties:
+        id:
+          type: integer
+          format: int64
+
+    ClosePositionRequest:
+      type: object
+      required: [exitDate, exitPrice]
+      properties:
+        exitDate:
+          type: string
+          format: date
+        exitPrice:
+          type: number
+
+    PositionResponse:
+      type: object
+      required:
+        - id
+        - symbol
+        - entryDate
+        - entryPrice
+        - lot
+        - status
+        - costBasis
+        - marketValue
+        - unrealizedPL
+        - unrealizedPLPct
+      properties:
+        id:
+          type: integer
+          format: int64
+        symbol:
+          type: string
+        sector:
+          type: string
+          nullable: true
+        entryDate:
+          type: string
+          format: date
+        entryPrice:
+          type: number
+        lot:
+          type: integer
+          format: int64
+        stopLoss:
+          type: number
+          nullable: true
+        takeProfit:
+          type: number
+          nullable: true
+        notes:
+          type: string
+          nullable: true
+        status:
+          type: string
+          enum: [open, closed]
+        exitDate:
+          type: string
+          format: date
+          nullable: true
+        exitPrice:
+          type: number
+          nullable: true
+        currentPrice:
+          type: number
+          nullable: true
+          description: Harga close terakhir yang tersimpan (hanya untuk posisi open)
+        costBasis:
+          type: number
+        marketValue:
+          type: number
+        unrealizedPL:
+          type: number
+          description: Untuk posisi closed, ini adalah realized P&L terhadap exitPrice
+        unrealizedPLPct:
+          type: number
+        riskAmount:
+          type: number
+          nullable: true
+          description: (entryPrice-stopLoss)*lot*100, null bila posisi tidak punya stop loss
+
+    ConcentrationWarning:
+      type: object
+      required: [kind, key, pct, limit]
+      properties:
+        kind:
+          type: string
+          enum: [stock, sector]
+        key:
+          type: string
+        pct:
+          type: number
+        limit:
+          type: number
+
+    PortfolioSummaryResponse:
+      type: object
+      required:
+        - positions
+        - totalCostBasis
+        - totalMarketValue
+        - totalUnrealizedPL
+        - totalUnrealizedPLPct
+        - stockConcentration
+        - sectorConcentration
+        - warnings
+      properties:
+        positions:
+          type: array
+          items:
+            $ref: '#/components/schemas/PositionResponse'
+        totalCostBasis:
+          type: number
+        totalMarketValue:
+          type: number
+        totalUnrealizedPL:
+          type: number
+        totalUnrealizedPLPct:
+          type: number
+        stockConcentration:
+          type: object
+          additionalProperties:
+            type: number
+          description: symbol -> porsi dari total nilai portofolio (0..1)
+        sectorConcentration:
+          type: object
+          additionalProperties:
+            type: number
+        warnings:
+          type: array
+          items:
+            $ref: '#/components/schemas/ConcentrationWarning'
+
+    PositionSizeRequest:
+      type: object
+      required: [equity, riskPct, entryPrice, stopLoss]
+      properties:
+        equity:
+          type: number
+          description: Modal/akun trading (Rp)
+        riskPct:
+          type: number
+          description: 0..1, mis. 0.02 untuk aturan 2%
+        entryPrice:
+          type: number
+        stopLoss:
+          type: number
+
+    PositionSizeResponse:
+      type: object
+      required: [riskAmount, perShareRisk, lots, shares, positionValue]
+      properties:
+        riskAmount:
+          type: number
+        perShareRisk:
+          type: number
+        lots:
+          type: integer
+          format: int64
+        shares:
+          type: integer
+          format: int64
+        positionValue:
+          type: number
+        error:
+          type: string
+
+    OutlookSignal:
+      type: object
+      required: [source, text, points]
+      properties:
+        source:
+          type: string
+          enum: [fase, pva]
+        text:
+          type: string
+        points:
+          type: integer
+          description: Kontribusi ke skor total (positif = bullish, negatif = bearish)
+
+    OutlookResponse:
+      type: object
+      required: [symbol, bias, score, bullish, bearish]
+      properties:
+        symbol:
+          type: string
+        bias:
+          type: string
+          enum: [BULLISH, BEARISH, NETRAL]
+        score:
+          type: integer
+          description: Jumlah points dari seluruh sinyal; ambang ±3 untuk BULLISH/BEARISH
+        bullish:
+          type: array
+          items:
+            $ref: '#/components/schemas/OutlookSignal'
+        bearish:
+          type: array
+          items:
+            $ref: '#/components/schemas/OutlookSignal'
+        phase:
+          $ref: '#/components/schemas/Phase'
+          description: Fase terakhir/sedang berjalan yang mendasari sinyal "fase", null bila tidak ada
+        pvaBias:
+          type: string
+          enum: [BULLISH, BEARISH, NETRAL]
+        pvaScore:
+          type: integer
+        climax:
+          $ref: '#/components/schemas/Climax'
+
+    AlertResponse:
+      type: object
+      required: [id, symbol, newBias, score, createdAt]
+      description: >
+        Satu event perubahan bias Outlook. Bentuk yang sama dikirim lewat GET
+        /alerts (histori) maupun WebSocket /ws/alerts (real-time).
+      properties:
+        id:
+          type: integer
+          format: int64
+        symbol:
+          type: string
+        oldBias:
+          type: string
+          enum: [BULLISH, BEARISH, NETRAL]
+          description: Kosong bila ini observasi pertama simbol tsb (tidak pernah muncul lewat /ws/alerts — baseline pertama tidak memicu alert)
+        newBias:
+          type: string
+          enum: [BULLISH, BEARISH, NETRAL]
+        score:
+          type: integer
+        createdAt:
+          type: string
+          format: date-time
+
+    LiquidityAlertResponse:
+      type: object
+      required: [id, symbol, newLevel, score, createdAt]
+      description: >
+        Satu event perubahan level anomali volume/likuiditas sebuah simbol,
+        dikirim lewat GET /liquidity-alerts.
+      properties:
+        id:
+          type: integer
+          format: int64
+        symbol:
+          type: string
+        oldLevel:
+          type: string
+          enum: [normal, surge, awakening, surge+awakening]
+          description: Kosong bila ini observasi pertama simbol tsb — baseline pertama tidak memicu alert
+        newLevel:
+          type: string
+          enum: [normal, surge, awakening, surge+awakening]
+        score:
+          type: integer
+        reasons:
+          type: array
+          items: { type: string }
+          description: Alasan yang bisa dibaca manusia, mis. "Volume hari ini 2.4x rata-rata 20 hari"
+        createdAt:
+          type: string
+          format: date-time
+
+    LiquidityCandidateResponse:
+      type: object
+      required: [symbol, level, score, updatedAt]
+      description: >
+        Satu simbol yang levelnya sedang tidak normal menurut state watcher
+        terakhir, dikirim lewat GET /screener/liquidity-candidates.
+      properties:
+        symbol:
+          type: string
+        level:
+          type: string
+          enum: [surge, awakening, surge+awakening]
+        score:
+          type: integer
+        updatedAt:
+          type: string
+          format: date-time
+
+    FundamentalsResponse:
+      type: object
+      required: [symbol, fetchedAt]
+      description: >
+        Semua field metrik nullable — Yahoo Finance kadang tidak punya
+        datanya untuk saham tertentu (mis. rasio hutang/likuiditas sering
+        kosong untuk bank di IDX).
+      properties:
+        symbol:
+          type: string
+        marketCap:
+          type: number
+          nullable: true
+        peRatio:
+          type: number
+          nullable: true
+        forwardPE:
+          type: number
+          nullable: true
+        pegRatio:
+          type: number
+          nullable: true
+        priceToBook:
+          type: number
+          nullable: true
+        priceToSales:
+          type: number
+          nullable: true
+        bookValue:
+          type: number
+          nullable: true
+        epsTrailing:
+          type: number
+          nullable: true
+        epsForward:
+          type: number
+          nullable: true
+        dividendYield:
+          type: number
+          nullable: true
+          description: Fraksi (0.0567 = 5.67%)
+        dividendRate:
+          type: number
+          nullable: true
+        payoutRatio:
+          type: number
+          nullable: true
+        revenueTtm:
+          type: number
+          nullable: true
+        revenueGrowth:
+          type: number
+          nullable: true
+        earningsGrowth:
+          type: number
+          nullable: true
+        profitMargin:
+          type: number
+          nullable: true
+        operatingMargin:
+          type: number
+          nullable: true
+        roe:
+          type: number
+          nullable: true
+        roa:
+          type: number
+          nullable: true
+        totalCash:
+          type: number
+          nullable: true
+        totalDebt:
+          type: number
+          nullable: true
+        beta:
+          type: number
+          nullable: true
+        sharesOutstanding:
+          type: integer
+          format: int64
+          nullable: true
+        week52Low:
+          type: number
+          nullable: true
+        week52High:
+          type: number
+          nullable: true
+        week52Change:
+          type: number
+          nullable: true
+        targetMeanPrice:
+          type: number
+          nullable: true
+        targetHighPrice:
+          type: number
+          nullable: true
+        targetLowPrice:
+          type: number
+          nullable: true
+        recommendationKey:
+          type: string
+          description: "mis. strong_buy, buy, hold, sell (istilah asli Yahoo Finance)"
+        numAnalysts:
+          type: integer
+          nullable: true
+        currency:
+          type: string
+        fetchedAt:
+          type: string
+          format: date-time
+        stale:
+          type: boolean
+          description: true bila fetch terbaru gagal dan ini adalah cache lama
+        error:
+          type: string
+          description: Pesan error fetch terbaru, hanya terisi bila stale true
+
+    KeyStatsResponse:
+      type: object
+      required: [symbol]
+      description: Kosong (cuma symbol) bila extension belum pernah push KeyStats simbol ini.
+      properties:
+        symbol:
+          type: string
+        peRatio:
+          type: number
+        pbvRatio:
+          type: number
+        roe:
+          type: number
+        roa:
+          type: number
+        der:
+          type: number
+        dividendYield:
+          type: number
+        marketCap:
+          type: number
+        updatedAt:
+          type: string
+          format: date-time
+
+    DividendResponse:
+      type: object
+      required: [symbol, cumDate]
+      properties:
+        id:
+          type: integer
+          format: int64
+        symbol:
+          type: string
+        cumDate:
+          type: string
+        exDate:
+          type: string
+        paymentDate:
+          type: string
+        amount:
+          type: number
+        updatedAt:
+          type: string
+          format: date-time
+
+    FinancialStatementItemResponse:
+      type: object
+      required: [symbol, reportType, statementType, period, itemName]
+      properties:
+        id:
+          type: integer
+          format: int64
+        symbol:
+          type: string
+        reportType:
+          type: string
+          enum: [income, balance, cashflow]
+        statementType:
+          type: string
+          enum: [quarterly, annual]
+        period:
+          type: string
+        currency:
+          type: string
+        itemId:
+          type: integer
+        itemName:
+          type: string
+        value:
+          type: number
+        updatedAt:
+          type: string
+          format: date-time
+
+    InsiderTransactionResponse:
+      type: object
+      required: [symbol, holderName]
+      properties:
+        id:
+          type: integer
+          format: int64
+        symbol:
+          type: string
+        holderName:
+          type: string
+        actionType:
+          type: string
+        shares:
+          type: integer
+          format: int64
+        price:
+          type: number
+        txDate:
+          type: string
+        updatedAt:
+          type: string
+          format: date-time
+
+    AIOutlookRequest:
+      type: object
+      required: [apiKey]
+      properties:
+        apiKey:
+          type: string
+          description: Gemini API key milik user, dikirim per-request, tidak disimpan di server.
+
+    AIOutlookResponse:
+      type: object
+      required: [symbol, analysis, generatedAt]
+      properties:
+        symbol:
+          type: string
+        analysis:
+          type: string
+          description: Narasi analisa dari Gemini (Bahasa Indonesia)
+        generatedAt:
+          type: string
+          format: date-time
+
+    MacroQuoteResponse:
+      type: object
+      required: [ticker, name]
+      properties:
+        ticker:
+          type: string
+          description: "Kode ticker Yahoo Finance, mis. USDIDR=X, ^JKSE"
+        name:
+          type: string
+        group:
+          type: string
+          enum: [komoditas, kurs, indeks, asia, amerika, kripto]
+          description: >
+            Kelompok instrumen. Strip Market Overview di header memakainya
+            untuk mewarnai blok Asia/Amerika, dan panel Macro memakainya
+            untuk mengelompokkan kartu.
+        price:
+          type: number
+        currency:
+          type: string
+        changePercent:
+          type: number
+          description: Perubahan harian dalam persen
+        fetchedAt:
+          type: string
+          format: date-time
+        stale:
+          type: boolean
+        error:
+          type: string
+          description: Terisi bila fetch gagal (baik dengan atau tanpa fallback cache)
+
+    MacroSensitivityResponse:
+      type: object
+      required: [id, symbol, factor, impactDirection, createdAt]
+      properties:
+        id:
+          type: integer
+          format: int64
+        symbol:
+          type: string
+        factor:
+          type: string
+          enum: [usdidr, oil, gold, copper, nickel, coal, bi_rate, fed_rate, other]
+        impactDirection:
+          type: string
+          enum: [diuntungkan, dirugikan]
+        note:
+          type: string
+        createdAt:
+          type: string
+          format: date-time
+
+    IngestTradePrint:
+      type: object
+      required: [ts, price, lot]
+      properties:
+        ts: { type: integer, format: int64, description: unix millis }
+        price: { type: number }
+        lot: { type: integer, format: int64 }
+        freq: { type: integer }
+        direction: { type: string, enum: [buy, sell, unknown], default: unknown }
+        buyerBroker: { type: string, description: "terisi hanya untuk print dari fetchRunningTrade (data transaksi asli)" }
+        sellerBroker: { type: string }
+        extTradeId: { type: string, description: "id transaksi asli Stockbit (buy_order_number-sell_order_number), dipakai backend utk upsert dedup saat direlay ulang" }
+
+    IngestTradesRequest:
+      type: object
+      required: [symbol, trades]
+      properties:
+        symbol: { type: string }
+        trades:
+          type: array
+          items: { $ref: '#/components/schemas/IngestTradePrint' }
+
+    IngestBrokerRangeRequest:
+      type: object
+      required: [symbol, from, to, buyers, sellers]
+      properties:
+        symbol: { type: string }
+        from: { type: string, format: date }
+        to: { type: string, format: date }
+        buyers:
+          type: array
+          items: { $ref: '#/components/schemas/BrokerRow' }
+        sellers:
+          type: array
+          items: { $ref: '#/components/schemas/BrokerRow' }
+
+    IngestNewsItem:
+      type: object
+      required: [extId, title]
+      properties:
+        extId: { type: string, description: id item dari Stockbit / hash dedup buatan extension }
+        symbol: { type: string }
+        title: { type: string }
+        url: { type: string }
+        source: { type: string }
+        postedAt: { type: string, format: date-time }
+
+    IngestNewsRequest:
+      type: object
+      required: [items]
+      properties:
+        items:
+          type: array
+          items: { $ref: '#/components/schemas/IngestNewsItem' }
+
+    TradePrint:
+      type: object
+      required: [ts, price, lot, freq, direction]
+      properties:
+        ts: { type: integer, format: int64 }
+        price: { type: number }
+        lot: { type: integer, format: int64 }
+        freq: { type: integer }
+        direction: { type: string, enum: [buy, sell, unknown] }
+        buyerBroker: { type: string }
+        sellerBroker: { type: string }
+
+    TopBroker:
+      type: object
+      required: [code, name, val, n]
+      properties:
+        code: { type: string }
+        name: { type: string }
+        val: { type: number }
+        n: { type: integer }
+
+    TradePressure:
+      type: object
+      required: [buyLot, sellLot, unknownLot, buyVal, sellVal, vwap, nPrints, bigPrints, bigLotMin]
+      properties:
+        buyLot: { type: integer, format: int64 }
+        sellLot: { type: integer, format: int64 }
+        unknownLot: { type: integer, format: int64 }
+        buyVal: { type: number }
+        sellVal: { type: number }
+        vwap: { type: number }
+        nPrints: { type: integer }
+        bigPrints: { type: integer }
+        bigLotMin: { type: integer, format: int64 }
+
+    TradesResponse:
+      type: object
+      required: [symbol, date, prints]
+      properties:
+        symbol: { type: string }
+        date: { type: string, description: kosong bila belum ada data sama sekali }
+        availableDates:
+          type: array
+          items: { type: string }
+        prints:
+          type: array
+          items: { $ref: '#/components/schemas/TradePrint' }
+        pressure: { $ref: '#/components/schemas/TradePressure' }
+        topBuyers:
+          type: array
+          items: { $ref: '#/components/schemas/TopBroker' }
+        topSellers:
+          type: array
+          items: { $ref: '#/components/schemas/TopBroker' }
+
+    BrokerFlow:
+      type: object
+      required: [code, name, type, buyVal, sellVal, netVal, buyLot, sellLot, freq]
+      properties:
+        code: { type: string }
+        name: { type: string }
+        type: { type: string, description: asing/bumn/lokal-inst/campuran/ritel/ritel-online/lain }
+        buyVal: { type: number }
+        sellVal: { type: number }
+        netVal: { type: number }
+        buyLot: { type: integer, format: int64 }
+        sellLot: { type: integer, format: int64 }
+        avgBuyPrice: { type: number }
+        avgSellPrice: { type: number }
+        freq: { type: integer }
+
+    BrokerAnalysisResponse:
+      type: object
+      required: [symbol, from, to, granularity, totalValue, smartNetValue, smartSharePct, top3AccumPct, brokers]
+      properties:
+        symbol: { type: string }
+        from: { type: string, format: date }
+        to: { type: string, format: date }
+        granularity: { type: string, enum: ['harian', 'agregat', ''] }
+        totalValue: { type: number }
+        smartNetValue: { type: number }
+        smartSharePct: { type: number }
+        top3AccumPct: { type: number }
+        brokers:
+          type: array
+          items: { $ref: '#/components/schemas/BrokerFlow' }
+        error: { type: string }
+
+    NewsItemResponse:
+      type: object
+      required: [id, title, topic, sentiment, impacts]
+      properties:
+        id: { type: integer, format: int64 }
+        symbol: { type: string }
+        title: { type: string }
+        summary: { type: string }
+        url: { type: string }
+        source: { type: string }
+        topic: { type: string }
+        sentiment: { type: string, enum: [POSITIF, NEGATIF, NETRAL] }
+        impacts:
+          type: array
+          items:
+            type: object
+            required: [symbol, sentiment, confidence]
+            properties:
+              symbol: { type: string }
+              sentiment: { type: string, enum: [POSITIF, NEGATIF, NETRAL] }
+              confidence: { type: number }
+              reason: { type: string }
+        postedAt: { type: string, format: date-time }
+
+    DecisionSignal:
+      type: object
+      required: [source, text, points]
+      properties:
+        source: { type: string }
+        text: { type: string }
+        points: { type: integer }
+
+    TradePlan:
+      type: object
+      required: [entry, stopLoss, takeProfit, atr, riskReward]
+      properties:
+        entry: { type: number }
+        stopLoss: { type: number }
+        takeProfit: { type: number }
+        atr: { type: number }
+        riskReward: { type: number }
+
+    DecisionResponse:
+      type: object
+      required: [symbol, verdict, score, signals, from, to]
+      properties:
+        symbol: { type: string }
+        verdict: { type: string, enum: [BELI, PANTAU, HINDARI] }
+        score: { type: integer }
+        signals:
+          type: array
+          items: { $ref: '#/components/schemas/DecisionSignal' }
+        plan: { $ref: '#/components/schemas/TradePlan' }
+        from: { type: string, format: date }
+        to: { type: string, format: date }
+
+    CatalystResponse:
+      type: object
+      required: [id, symbol, category, description, impact, status, addedBy, createdAt, updatedAt]
+      properties:
+        id:
+          type: integer
+          format: int64
+        symbol:
+          type: string
+        category:
+          type: string
+          enum: [proyek, ekspansi, tenant, pabrik, pemerintah, makro, lainnya]
+        description:
+          type: string
+        impact:
+          type: string
+          enum: [bullish, bearish, netral]
+        expectedPeriod:
+          type: string
+          description: "Teks bebas, mis. \"2026 Q4\", \"2027\", \"H2 2026\""
+        status:
+          type: string
+          enum: [rumor, confirmed, in_progress, completed]
+        sourceUrl:
+          type: string
+        sourceName:
+          type: string
+        confidence:
+          type: string
+          enum: [rendah, sedang, tinggi]
+        addedBy:
+          type: string
+          enum: [riset, manual]
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+
+    CreateCatalystRequest:
+      type: object
+      required: [symbol, category, description, impact]
+      properties:
+        symbol:
+          type: string
+        category:
+          type: string
+          enum: [proyek, ekspansi, tenant, pabrik, pemerintah, makro, lainnya]
+        description:
+          type: string
+        impact:
+          type: string
+          enum: [bullish, bearish, netral]
+        expectedPeriod:
+          type: string
+        status:
+          type: string
+          enum: [rumor, confirmed, in_progress, completed]
+          default: rumor
+        sourceUrl:
+          type: string
+        sourceName:
+          type: string
+        confidence:
+          type: string
+          enum: [rendah, sedang, tinggi]
+        addedBy:
+          type: string
+          enum: [riset, manual]
+          default: manual
+
+    UpdateCatalystRequest:
+      type: object
+      required: [category, description, impact, status]
+      properties:
+        category:
+          type: string
+          enum: [proyek, ekspansi, tenant, pabrik, pemerintah, makro, lainnya]
+        description:
+          type: string
+        impact:
+          type: string
+          enum: [bullish, bearish, netral]
+        expectedPeriod:
+          type: string
+        status:
+          type: string
+          enum: [rumor, confirmed, in_progress, completed]
+        sourceUrl:
+          type: string
+        sourceName:
+          type: string
+        confidence:
+          type: string
+          enum: [rendah, sedang, tinggi]
+
+    CreateMacroSensitivityRequest:
+      type: object
+      required: [symbol, factor, impactDirection]
+      properties:
+        symbol:
+          type: string
+        factor:
+          type: string
+          enum: [usdidr, oil, gold, copper, nickel, coal, bi_rate, fed_rate, other]
+        impactDirection:
+          type: string
+          enum: [diuntungkan, dirugikan]
+        note:
+          type: string
+
+    ResetDataRequest:
+      type: object
+      required: [confirm]
+      properties:
+        confirm:
+          type: boolean
+          description: Harus true — pengaman terhadap POST kosong/tidak sengaja

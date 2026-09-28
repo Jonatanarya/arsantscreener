@@ -1,0 +1,14 @@
+#!/usr/bin/env bash
+set -euo pipefail
+out_dir=/srv/arsant-screener/ops
+install -d -m 755 "$out_dir"
+read -r total used free pct _ < <(df -B1 --output=size,used,avail,pcent,target /srv/arsant-data | tail -1)
+read -r root_total root_used root_free root_pct _ < <(df -B1 --output=size,used,avail,pcent,target / | tail -1)
+latest=$(find /srv/arsant-data/backups/mysql -maxdepth 1 -type f -name 'arsant-screener-*.sql.gz' -printf '%T@ %s\n' 2>/dev/null | sort -n | tail -1 || true)
+backup_unix=${latest%%.*}; backup_bytes=${latest##* }
+[[ -n "$latest" ]] || { backup_unix=0; backup_bytes=0; }
+is_active(){ systemctl is-active --quiet "$1" && printf true || printf false; }
+tmp="$out_dir/.status.json.tmp"
+printf '{"rootDiskUsedPct":%s,"rootDiskFreeBytes":%s,"dataDiskUsedPct":%s,"dataDiskFreeBytes":%s,"backupLastUnix":%s,"backupBytes":%s,"apiActive":%s,"workerActive":%s,"nginxActive":%s,"backupTimerActive":%s,"maintenanceTimerActive":%s}\n' "${root_pct%%%}" "$root_free" "${pct%%%}" "$free" "$backup_unix" "$backup_bytes" "$(is_active arsant-api)" "$(is_active arsant-worker)" "$(is_active nginx)" "$(is_active arsant-mysql-backup.timer)" "$(is_active arsant-maintenance.timer)" > "$tmp"
+chmod 644 "$tmp"
+mv "$tmp" "$out_dir/status.json"

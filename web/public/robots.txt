@@ -1,0 +1,7 @@
+User-agent: *
+Allow: /
+Disallow: /app
+Disallow: /api
+Disallow: /account
+
+Sitemap: https://arsant.web.id/sitemap.xml

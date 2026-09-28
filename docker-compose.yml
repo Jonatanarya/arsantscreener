@@ -1,0 +1,22 @@
+services:
+  mysql:
+    image: mysql:8.4
+    container_name: arsant-screener-mysql
+    restart: unless-stopped
+    environment:
+      MYSQL_DATABASE: arsant_screener
+      MYSQL_ROOT_PASSWORD: arsant_local
+    ports:
+      - "3306:3306"
+    volumes:
+      - arsant_mysql_data:/var/lib/mysql
+      - ./infra/mysql-init/00-run-migrations.sh:/docker-entrypoint-initdb.d/00-run-migrations.sh:ro
+      - ./server/migrations:/migrations:ro
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-proot", "-parsant_local"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+volumes:
+  arsant_mysql_data:

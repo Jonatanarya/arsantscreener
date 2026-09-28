@@ -1,0 +1,33 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+session_dir=/srv/arsant-data/stockbit-session
+profile_dir="$session_dir/profile"
+home_dir="$session_dir/home"
+display_number=:97
+
+install -d -m 700 "$session_dir" "$profile_dir" "$home_dir"
+export HOME="$home_dir"
+export DISPLAY="$display_number"
+
+Xvfb "$display_number" -screen 0 1440x900x24 -nolisten tcp -ac &
+xvfb_pid=$!
+trap 'kill "$xvfb_pid" 2>/dev/null || true' EXIT
+
+for _ in $(seq 1 50); do
+  [[ -S /tmp/.X11-unix/X97 ]] && break
+  sleep 0.1
+done
+
+exec /usr/bin/chromium-browser \
+  --user-data-dir="$profile_dir" \
+  --remote-debugging-address=127.0.0.1 \
+  --remote-debugging-port=9222 \
+  --remote-allow-origins=http://127.0.0.1:9222,http://localhost:9222 \
+  --disable-dev-shm-usage \
+  --disable-gpu \
+  --no-first-run \
+  --no-default-browser-check \
+  --password-store=basic \
+  --window-size=1440,900 \
+  https://stockbit.com/symbol/BBCA

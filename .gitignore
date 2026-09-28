@@ -1,0 +1,24 @@
+# Go
+server/tradewise-server
+server/*.log
+/tmp/
+/build/
+/server/build/
+/server/bin/
+/server/arsant-*
+/server/server_bin
+/logs/
+/.claude/
+
+# Env
+.env
+*.env
+!.env.example
+
+# Node / web
+web/node_modules/
+web/dist/
+web/.vite/
+
+# OS
+.DS_Store

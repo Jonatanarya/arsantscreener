@@ -1,0 +1,7 @@
+[Unit]
+Description=Refresh Arsant Screener operational status
+RequiresMountsFor=/srv/arsant-data
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/arsant-ops-status

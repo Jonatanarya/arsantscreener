@@ -1,0 +1,3 @@
+DROP TABLE IF EXISTS news;
+DROP TABLE IF EXISTS broker_range_agg;
+DROP TABLE IF EXISTS trades;
